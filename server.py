@@ -1,15 +1,15 @@
 """
-server.py - UCHAT Central Server
+server.py - CSC3002S Networking Assignment Central Server
 =================================
 CSC3002F Networks Assignment - Stage 2
 
 Architecture: Client-Server (TCP for core chat, UDP for presence/heartbeat)
-Protocol:     UCHAT/1.0 - HTTP-inspired text headers + binary body
+Protocol:     CSC3002S/1.0 - HTTP-inspired text headers + binary body
 Framing:      4-byte big-endian length prefix on all TCP messages
 Paradigms:    This file implements the C/S side; P2P is brokered via PEER_INFO
 
-Message Format (UCHAT/1.0):
-    METHOD|UCHAT/1.0\r\n
+Message Format (CSC3002S/1.0):
+    METHOD|CSC3002S/1.0\r\n
     Header-Key:\tHeader-Value\r\n
     ...\r\n
     \r\n
@@ -42,7 +42,7 @@ TCP_ADDR   = (SERVER_IP, TCP_PORT)
 UDP_ADDR   = (SERVER_IP, UDP_PORT)
 FORMAT     = "utf-8"
 CRLF       = "\r\n"
-VERSION    = "UCHAT/1.0"
+VERSION    = "CSC3002S/1.0"
 
 # ============================================================================
 # Protocol Constants  (message method names matching the spec)
@@ -124,14 +124,14 @@ def _recv_exact(connection, n):
     return buf
 
 # ============================================================================
-# UCHAT/1.0 Message Encoding / Decoding
+# CSC3002S/1.0 Message Encoding / Decoding
 # ============================================================================
 
 def encode_message(method, headers=None, body=b""):
-    """Encode a UCHAT/1.0 message into bytes ready for TCP framing.
+    """Encode a CSC3002S/1.0 message into bytes ready for TCP framing.
 
     Wire format:
-        METHOD|UCHAT/1.0\r\n
+        METHOD|CSC3002S/1.0\r\n
         Key:\tValue\r\n
         Content-Length:\t<n>\r\n
         \r\n
@@ -152,7 +152,7 @@ def encode_message(method, headers=None, body=b""):
 
 
 def decode_message(raw):
-    """Decode a UCHAT/1.0 message from raw bytes.
+    """Decode a CSC3002S/1.0 message from raw bytes.
 
     Returns:
         {"method": str, "version": str, "headers": dict, "body": bytes}
@@ -196,7 +196,7 @@ def decode_message(raw):
 # ============================================================================
 
 def send_to(connection, method, headers=None, body=b""):
-    """Encode and frame-send a UCHAT/1.0 message over TCP."""
+    """Encode and frame-send a CSC3002S/1.0 message over TCP."""
     raw = encode_message(method, headers or {}, body)
     tcp_send(connection, raw)
 
@@ -253,10 +253,10 @@ def entry_sequence(connection, address):
     Returns the authenticated username on success, None on failure.
 
     Exchange (REGISTER):
-        Client -> REGISTER|UCHAT/1.0  body: JSON {username, password}
+        Client -> REGISTER|CSC3002S/1.0  body: JSON {username, password}
         Server -> ACK  Status: 201
     Exchange (LOGIN):
-        Client -> LOGIN|UCHAT/1.0  body: JSON {username, password}
+        Client -> LOGIN|CSC3002S/1.0  body: JSON {username, password}
         Server -> ACK  Status: 200
         Server -> ERROR  Status: 401/404/409 on failure
     """
@@ -550,7 +550,7 @@ def udp_listener():
     is needed here — each recvfrom() call returns exactly one datagram.
 
     Expected heartbeat format:
-        HEARTBEAT|UCHAT/1.0\r\n
+        HEARTBEAT|CSC3002S/1.0\r\n
         From:\t<username>\r\n
         \r\n
     """
@@ -623,7 +623,7 @@ def start_tcp_server():
 # ============================================================================
 
 def main():
-    print("[STARTING] UCHAT Server")
+    print("[STARTING] CSC3002S Networking Assignment Server")
     threading.Thread(target=udp_listener,    daemon=True).start()
     threading.Thread(target=heartbeat_reaper, daemon=True).start()
     start_tcp_server()
