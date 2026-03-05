@@ -1,15 +1,15 @@
 """
-server.py - CSC3002S Networking Assignment Central Server
-=================================
+server.py - CSC3002F Networks Assignment Central Server
+=======================================================
 CSC3002F Networks Assignment - Stage 2
 
 Architecture: Client-Server (TCP for core chat, UDP for presence/heartbeat)
-Protocol:     CSC3002S/1.0 - HTTP-inspired text headers + binary body
+Protocol:     CSC3002F Networks Assignment/1.0 - HTTP-inspired text headers + binary body
 Framing:      4-byte big-endian length prefix on all TCP messages
 Paradigms:    This file implements the C/S side; P2P is brokered via PEER_INFO
 
-Message Format (CSC3002S/1.0):
-    METHOD|CSC3002S/1.0\r\n
+Message Format (CSC3002F Networks Assignment/1.0):
+    METHOD|CSC3002F Networks Assignment/1.0\r\n
     Header-Key:\tHeader-Value\r\n
     ...\r\n
     \r\n
@@ -38,11 +38,11 @@ import time
 TCP_PORT   = 5072
 UDP_PORT   = 5073
 SERVER_IP  = socket.gethostbyname(socket.gethostname())
-TCP_ADDR   = (SERVER_IP, TCP_PORT)
-UDP_ADDR   = (SERVER_IP, UDP_PORT)
+TCP_ADDR   = ("0.0.0.0", TCP_PORT)
+UDP_ADDR   = ("0.0.0.0", UDP_PORT)
 FORMAT     = "utf-8"
 CRLF       = "\r\n"
-VERSION    = "CSC3002S/1.0"
+VERSION    = "CSC3002F Networks Assignment/1.0"
 
 # ============================================================================
 # Protocol Constants  (message method names matching the spec)
@@ -83,10 +83,11 @@ groups_lock  = threading.Lock()
 #   "address": (ip, port),
 #   "visibility": "Public" | "Hidden",
 #   "status": "Available" | "Busy",
-#   "p2p_tcp_port": int,    # port client listens on for P2P TCP (file transfer)
-#   "udp_port": int,        # port client listens on for UDP (media streaming)
+#   "p2p_tcp_port": int,    # port client listens on for P2P TCP (media/file transfer)
 #   "last_heartbeat": float
 # }
+# NOTE: UDP is only used for Client-Server heartbeats (HEARTBEAT/PING/PONG on
+# port 5073). Media and file transfer uses P2P/TCP exclusively.
 clients = {}
 
 # groups[group_name] = {"creator": str, "members": set()}
@@ -124,14 +125,14 @@ def _recv_exact(connection, n):
     return buf
 
 # ============================================================================
-# CSC3002S/1.0 Message Encoding / Decoding
+# CSC3002F Networks Assignment/1.0 Message Encoding / Decoding
 # ============================================================================
 
 def encode_message(method, headers=None, body=b""):
-    """Encode a CSC3002S/1.0 message into bytes ready for TCP framing.
+    """Encode a CSC3002F Networks Assignment/1.0 message into bytes ready for TCP framing.
 
     Wire format:
-        METHOD|CSC3002S/1.0\r\n
+        METHOD|CSC3002F Networks Assignment/1.0\r\n
         Key:\tValue\r\n
         Content-Length:\t<n>\r\n
         \r\n
@@ -152,7 +153,7 @@ def encode_message(method, headers=None, body=b""):
 
 
 def decode_message(raw):
-    """Decode a CSC3002S/1.0 message from raw bytes.
+    """Decode a CSC3002F Networks Assignment/1.0 message from raw bytes.
 
     Returns:
         {"method": str, "version": str, "headers": dict, "body": bytes}
@@ -196,7 +197,7 @@ def decode_message(raw):
 # ============================================================================
 
 def send_to(connection, method, headers=None, body=b""):
-    """Encode and frame-send a CSC3002S/1.0 message over TCP."""
+    """Encode and frame-send a CSC3002F Networks Assignment/1.0 message over TCP."""
     raw = encode_message(method, headers or {}, body)
     tcp_send(connection, raw)
 
@@ -220,7 +221,6 @@ def build_user_list():
                 "username":     u,
                 "ip":           data["address"][0],
                 "p2p_tcp_port": data["p2p_tcp_port"],
-                "udp_port":     data["udp_port"],
                 "status":       data["status"],
             }
             for u, data in clients.items()
@@ -249,75 +249,75 @@ def build_group_list():
 def entry_sequence(connection, address):
     """Handle initial client handshake.
 
-    Clients must send REGISTER or LOGIN before any other command.
-    Returns the authenticated username on success, None on failure.
+    Loops until the client authenticates successfully or disconnects.
+    Returns the authenticated username, or None if the client disconnected.
 
     Exchange (REGISTER):
-        Client -> REGISTER|CSC3002S/1.0  body: JSON {username, password}
+        Client -> REGISTER|CSC3002F Networks Assignment/1.0  body: JSON {username, password}
         Server -> ACK  Status: 201
     Exchange (LOGIN):
-        Client -> LOGIN|CSC3002S/1.0  body: JSON {username, password}
+        Client -> LOGIN|CSC3002F Networks Assignment/1.0  body: JSON {username, password}
         Server -> ACK  Status: 200
-        Server -> ERROR  Status: 401/404/409 on failure
+        Server -> ERROR  Status: 401/404/409 on failure  (client may retry)
     """
-    raw = tcp_recv(connection)
-    if raw is None:
-        return None
+    while True:
+        raw = tcp_recv(connection)
+        if raw is None:
+            return None  # client disconnected
 
-    try:
-        msg = decode_message(raw)
-    except ValueError as e:
-        send_error(connection, "400", f"Bad request: {e}")
-        return None
+        try:
+            msg = decode_message(raw)
+        except ValueError as e:
+            send_error(connection, "400", f"Bad request: {e}")
+            continue
 
-    method = msg["method"]
-    try:
-        creds    = json.loads(msg["body"].decode(FORMAT))
-        username = creds["username"]
-        password = creds["password"]
-    except (json.JSONDecodeError, KeyError):
-        send_error(connection, "400", "Body must be JSON with 'username' and 'password'")
-        return None
+        method = msg["method"]
+        try:
+            creds    = json.loads(msg["body"].decode(FORMAT))
+            username = creds["username"]
+            password = creds["password"]
+        except (json.JSONDecodeError, KeyError):
+            send_error(connection, "400", "Body must be JSON with 'username' and 'password'")
+            continue
 
-    with clients_lock:
-        if method == REGISTER:
-            if username in clients:
-                send_error(connection, "409", "Username already taken")
-                return None
-            clients[username] = {
-                "password":       password,
-                "connection":     connection,
-                "address":        address,
-                "visibility":     "Public",
-                "status":         "Available",
-                "p2p_tcp_port":   0,
-                "udp_port":       0,
-                "last_heartbeat": time.time(),
-            }
-            send_to(connection, ACK, {"Status": "201", "Status-Text": "Account created"})
-            print(f"[REGISTER] New user: {username} from {address}")
-            return username
+        with clients_lock:
+            if method == REGISTER:
+                if username in clients:
+                    send_error(connection, "409", "Username already taken")
+                    continue
+                clients[username] = {
+                    "password":       password,
+                    "connection":     connection,
+                    "address":        address,
+                    "visibility":     "Public",
+                    "status":         "Available",
+                    "p2p_tcp_port":   0,
+                    "last_heartbeat": time.time(),
+                }
+                send_to(connection, ACK, {"Status": "201", "Status-Text": "Account created"})
+                print(f"[REGISTER] New user: {username} from {address}")
+                return username
 
-        elif method == LOGIN:
-            if username not in clients:
-                send_error(connection, "404", "User not found. Use REGISTER first.")
-                return None
-            if clients[username]["password"] != password:
-                send_error(connection, "401", "Wrong password")
-                return None
-            if clients[username]["connection"] is not None:
-                send_error(connection, "409", "Already logged in from another session")
-                return None
-            clients[username]["connection"]     = connection
-            clients[username]["address"]        = address
-            clients[username]["last_heartbeat"] = time.time()
-            send_to(connection, ACK, {"Status": "200", "Status-Text": "Login successful"})
-            print(f"[LOGIN] {username} from {address}")
-            return username
+            elif method == LOGIN:
+                if username not in clients:
+                    send_error(connection, "404", "User not found. Use REGISTER first.")
+                    continue
+                if clients[username]["password"] != password:
+                    send_error(connection, "401", "Wrong password")
+                    continue
+                if clients[username]["connection"] is not None:
+                    send_error(connection, "409", "Already logged in from another session")
+                    continue
+                clients[username]["connection"]     = connection
+                clients[username]["address"]        = address
+                clients[username]["last_heartbeat"] = time.time()
+                send_to(connection, ACK, {"Status": "200", "Status-Text": "Login successful"})
+                print(f"[LOGIN] {username} from {address}")
+                return username
 
-        else:
-            send_error(connection, "400", f"Expected REGISTER or LOGIN, got {method}")
-            return None
+            else:
+                send_error(connection, "400", f"Expected REGISTER or LOGIN, got {method}")
+                continue
 
 # ============================================================================
 # Per-client TCP message handler
@@ -336,11 +336,7 @@ def handle_client(connection, address):
 
     try:
         # ---- 1. Authentication ----
-        while username is None:
-            username = entry_sequence(connection, address)
-            if username is None:
-                break
-
+        username = entry_sequence(connection, address)
         if username is None:
             return
 
@@ -379,19 +375,18 @@ def handle_client(connection, address):
                         {"Content-Type": "application/json"}, group_list)
 
             # -- P2P port registration --
-            # Client registers its P2P TCP port and UDP streaming port with
-            # the server so other peers can look them up via PEER_INFO.
+            # Client registers its P2P TCP port with the server so other
+            # peers can look it up via PEER_INFO for direct file/media transfer.
             elif method == "REGISTER_PORTS":
                 try:
                     port_data = json.loads(body.decode(FORMAT))
                     with clients_lock:
                         clients[username]["p2p_tcp_port"] = int(port_data.get("p2p_tcp_port", 0))
-                        clients[username]["udp_port"]     = int(port_data.get("udp_port", 0))
                     send_ack(connection)
-                    print(f"[PORTS] {username}: P2P={clients[username]['p2p_tcp_port']} UDP={clients[username]['udp_port']}")
+                    print(f"[PORTS] {username}: P2P TCP={clients[username]['p2p_tcp_port']}")
                 except (json.JSONDecodeError, KeyError, ValueError):
                     send_error(connection, "400",
-                               "REGISTER_PORTS body must be JSON {p2p_tcp_port, udp_port}")
+                               "REGISTER_PORTS body must be JSON {p2p_tcp_port}")
 
             # -- P2P brokering --
             # Client A asks for Client B's IP and ports so they can connect
@@ -408,7 +403,6 @@ def handle_client(connection, address):
                             "username":     target,
                             "ip":           peer["address"][0],
                             "p2p_tcp_port": peer["p2p_tcp_port"],
-                            "udp_port":     peer["udp_port"],
                         }
                         send_to(connection, PEER_INFO,
                                 {"Status": "200", "Content-Type": "application/json"},
@@ -550,7 +544,7 @@ def udp_listener():
     is needed here — each recvfrom() call returns exactly one datagram.
 
     Expected heartbeat format:
-        HEARTBEAT|CSC3002S/1.0\r\n
+        HEARTBEAT|CSC3002F Networks Assignment/1.0\r\n
         From:\t<username>\r\n
         \r\n
     """
@@ -623,7 +617,7 @@ def start_tcp_server():
 # ============================================================================
 
 def main():
-    print("[STARTING] CSC3002S Networking Assignment Server")
+    print("[STARTING] CSC3002F Networks Assignment Server")
     threading.Thread(target=udp_listener,    daemon=True).start()
     threading.Thread(target=heartbeat_reaper, daemon=True).start()
     start_tcp_server()
