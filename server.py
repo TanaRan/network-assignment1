@@ -48,7 +48,7 @@ VERSION    = "CSC3002F Networks Assignment/1.0"
 # Protocol Constants  (message method names matching the spec)
 # ============================================================================
 
-# Command Messages — session lifecycle and group membership
+# Command Messages - session lifecycle and group membership
 REGISTER     = "REGISTER"
 LOGIN        = "LOGIN"
 LOGOUT       = "LOGOUT"
@@ -58,7 +58,7 @@ LEAVE_GROUP  = "LEAVE_GROUP"
 LIST_USERS   = "LIST_USERS"
 LIST_GROUPS  = "LIST_GROUPS"
 
-# Control Messages — acknowledgements, errors, coordination
+# Control Messages - acknowledgements, errors, coordination
 ACK          = "ACK"
 ERROR        = "ERROR"
 PEER_INFO    = "PEER_INFO"    # Broker P2P: return peer's IP + TCP/UDP port
@@ -66,7 +66,7 @@ PING         = "PING"
 PONG         = "PONG"
 HEARTBEAT    = "HEARTBEAT"    # UDP presence signal
 
-# Data Messages — chat content
+# Data Messages - chat content
 MSG          = "MSG"          # One-to-one text message (relayed via server)
 GROUP_MSG    = "GROUP_MSG"    # Group text message
 
@@ -94,7 +94,7 @@ clients = {}
 groups = {}
 
 # ============================================================================
-# TCP Framing — 4-byte big-endian length prefix
+# TCP Framing - 4-byte big-endian length prefix
 # ============================================================================
 
 def tcp_send(connection, raw_bytes):
@@ -243,7 +243,7 @@ def build_group_list():
     return json.dumps(result)
 
 # ============================================================================
-# Entry sequence — REGISTER or LOGIN
+# Entry sequence - REGISTER or LOGIN
 # ============================================================================
 
 def entry_sequence(connection, address):
@@ -324,7 +324,7 @@ def entry_sequence(connection, address):
 # ============================================================================
 
 def handle_client(connection, address):
-    """Main per-client loop — runs in its own thread.
+    """Main per-client loop - runs in its own thread.
 
     Lifecycle:
         1. Entry sequence (REGISTER / LOGIN)
@@ -335,12 +335,12 @@ def handle_client(connection, address):
     print(f"[CONNECT] New connection from {address}")
 
     try:
-        # ---- 1. Authentication ----
+        # 1. Authentication 
         username = entry_sequence(connection, address)
         if username is None:
             return
 
-        # ---- 2. Main command loop ----
+        #  2. Main command loop 
         while True:
             raw = tcp_recv(connection)
             if raw is None:
@@ -357,13 +357,13 @@ def handle_client(connection, address):
             headers = msg["headers"]
             body    = msg["body"]
 
-            # -- Logout --
+            #Logout
             if method == LOGOUT:
                 print(f"[LOGOUT] {username}")
                 send_ack(connection)
                 break
 
-            # -- Discovery --
+            # Discovery 
             elif method == LIST_USERS:
                 user_list = build_user_list()
                 send_to(connection, LIST_USERS,
@@ -374,7 +374,7 @@ def handle_client(connection, address):
                 send_to(connection, LIST_GROUPS,
                         {"Content-Type": "application/json"}, group_list)
 
-            # -- P2P port registration --
+            # P2P port registration 
             # Client registers its P2P TCP port with the server so other
             # peers can look it up via PEER_INFO for direct file/media transfer.
             elif method == "REGISTER_PORTS":
@@ -388,7 +388,7 @@ def handle_client(connection, address):
                     send_error(connection, "400",
                                "REGISTER_PORTS body must be JSON {p2p_tcp_port}")
 
-            # -- P2P brokering --
+            # P2P brokering 
             # Client A asks for Client B's IP and ports so they can connect
             # directly (P2P/TCP for file transfer, P2P/UDP for media streaming).
             elif method == PEER_INFO:
@@ -408,7 +408,7 @@ def handle_client(connection, address):
                                 {"Status": "200", "Content-Type": "application/json"},
                                 json.dumps(peer_data))
 
-            # -- Group management --
+            # Group management
 
             elif method == CREATE_GROUP:
                 try:
@@ -464,7 +464,7 @@ def handle_client(connection, address):
                         send_error(connection, "404",
                                    "Not a member of that group")
 
-            # -- One-to-one message relay (Client-Server / TCP) --
+            # One-to-one message relay (Client-Server / TCP) 
             # Design note: for direct text messages the server acts as relay.
             # For large media, clients use P2P TCP (PEER_INFO to get address,
             # then direct socket connection - not handled here).
@@ -485,7 +485,7 @@ def handle_client(connection, address):
                                 MSG, fwd_headers, msg_body)
                         send_ack(connection)
 
-            # -- Group message relay (Client-Server / TCP) --
+            # Group message relay (Client-Server / TCP)
             elif method == GROUP_MSG:
                 group_name = headers.get("Group", "").strip()
                 msg_body   = body.decode(FORMAT)
@@ -565,7 +565,7 @@ def udp_listener():
                         clients[sender]["status"]         = "Available"
 
             elif msg["method"] == PING:
-                # Stateless PONG reply — no need to look up the client
+                # Stateless PONG reply - no need to look up the client
                 sender = msg["headers"].get("From", "")
                 pong   = encode_message(PONG, {"To": sender})
                 udp_sock.sendto(pong, addr)

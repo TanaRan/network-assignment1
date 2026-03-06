@@ -3,19 +3,18 @@ client.py - CSC3002F Networks Assignment Client
 ================================================
 CSC3002F Networks Assignment - Stage 2
 
-Four communication paradigms implemented here:
+3 communication paradigms implemented here:
 
-  1. Client-Server / TCP  — login, messaging, group chat, discovery
+  1. Client-Server / TCP    login, messaging, group chat, discovery
                             (persistent TCP connection to server on port 5072)
 
-  2. Client-Server / UDP  — presence heartbeats sent every 10 seconds
+  2. Client-Server / UDP    presence heartbeats sent every 10 seconds
                             (UDP datagrams to server on port 5073)
 
-  3. P2P / TCP            — direct file/media transfer between peers
+  3. P2P / TCP              direct file/media transfer between peers
                             (client opens a listener; connects directly after
                              obtaining peer address via PEER_INFO from server)
 
-  4. P2P / UDP            — not used in this design (see design report §3.4)
 
 Protocol:   CSC3002F Networks Assignment/1.0  (HTTP-inspired text headers + binary body)
 Framing:    4-byte big-endian length prefix on all TCP messages
@@ -86,7 +85,7 @@ running        = True           # False when client is shutting down
 print_lock     = threading.Lock()   # Prevent interleaved terminal output
 
 # ============================================================================
-# TCP Framing — 4-byte big-endian length prefix
+# TCP Framing (4-byte big-endian length prefix)
 # ============================================================================
 
 def tcp_send(sock, raw_bytes):
@@ -207,7 +206,7 @@ def print_msg(text):
         print(f"[{username}]> ", end="", flush=True)
 
 # ============================================================================
-# Paradigm 1: Client-Server / TCP  — Authentication
+# Paradigm 1: Client-Server / TCP (Authentication)
 # ============================================================================
 
 def do_register(uname, passwd):
@@ -240,7 +239,7 @@ def do_login(uname, passwd):
         return False
 
 # ============================================================================
-# Paradigm 1: Client-Server / TCP  — Commands
+# Paradigm 1: Client-Server / TCP (Commands)
 # ============================================================================
 
 def cmd_list_users():
@@ -289,16 +288,16 @@ def cmd_logout():
     running = False
 
 # ============================================================================
-# Paradigm 3: P2P / TCP  — File / Media Transfer
+# Paradigm 3: P2P / TCP - File / Media Transfer
 #
 # Design rationale: large binary files are sent directly between peers to
 # avoid routing media through the server. The server only brokers the
-# peer's IP and P2P TCP port via PEER_INFO (Kurose Application Layer §2.6).
+# peer's IP and P2P TCP port via PEER_INFO.
 #
 # Transfer protocol (CSC3002F Networks Assignment-P2P/1.0):
 #   Sender connects to receiver's P2P TCP listener, then sends:
-#     1. MEDIA_META  — filename, file size, MIME type
-#     2. MEDIA_DATA  — raw file bytes in body
+#     1. MEDIA_META - filename, file size, MIME type
+#     2. MEDIA_DATA - raw file bytes in body
 # ============================================================================
 
 def cmd_send_file(to_user, filepath):
@@ -336,7 +335,7 @@ def _p2p_send_file(peer_ip, peer_p2p_port, filepath):
         p2p_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         p2p_sock.connect((peer_ip, peer_p2p_port))
 
-        # --- MEDIA_META: announce the transfer ---
+        # MEDIA_META: announce the transfer 
         meta = json.dumps({
             "filename":  filename,
             "file_size": file_size,
@@ -356,7 +355,7 @@ def _p2p_send_file(peer_ip, peer_p2p_port, filepath):
             p2p_sock.close()
             return
 
-        # --- MEDIA_DATA: send the raw file bytes ---
+        # MEDIA_DATA: send the raw file bytes 
         with open(filepath, "rb") as f:
             file_bytes = f.read()
 
@@ -457,19 +456,19 @@ def _handle_p2p_transfer(conn, addr):
         conn.close()
 
 # ============================================================================
-# Paradigm 2: Client-Server / UDP  — Heartbeat
+# Paradigm 2: Client-Server / UDP - Heartbeat
 #
 # Design rationale: the server needs to know which clients are still alive.
 # Using UDP for this avoids the cost of a full TCP connection for what is
 # essentially a periodic one-way signal. Occasional packet loss is acceptable
-# — the server marks clients Idle only after 30 seconds of silence.
+# as the server marks clients Idle only after 30 seconds of silence.
 # ============================================================================
 
 def heartbeat_sender():
     """Send a UDP HEARTBEAT datagram to the server every HEARTBEAT_INTERVAL seconds.
 
     UDP preserves datagram boundaries natively, so no length-prefix framing
-    is applied here — the datagram is sent as-is using encode_message().
+    is applied here; the datagram is sent as-is using encode_message().
     """
     while running:
         try:
@@ -481,7 +480,7 @@ def heartbeat_sender():
         time.sleep(HEARTBEAT_INTERVAL)
 
 # ============================================================================
-# Background: Server → Client message listener (TCP)
+# Background: Server to Client message listener (TCP)
 #
 # Runs in a daemon thread. Handles all unsolicited inbound messages
 # (MSG, GROUP_MSG, PEER_INFO responses, ACK, ERROR for async commands).
@@ -507,7 +506,7 @@ def server_listener():
             headers = msg["headers"]
             body    = msg["body"]
 
-            # -- Inbound one-to-one message --
+            # Inbound one-to-one message
             if method == MSG:
                 sender    = headers.get("From", "?")
                 timestamp = headers.get("Timestamp", "")
@@ -515,7 +514,7 @@ def server_listener():
                 t_str     = time.strftime("%H:%M:%S", time.localtime(float(timestamp))) if timestamp else ""
                 print_msg(f"[{t_str}] {sender}: {text}")
 
-            # -- Inbound group message --
+            # Inbound group message 
             elif method == GROUP_MSG:
                 sender     = headers.get("From", "?")
                 group_name = headers.get("Group", "?")
@@ -524,7 +523,7 @@ def server_listener():
                 t_str      = time.strftime("%H:%M:%S", time.localtime(float(timestamp))) if timestamp else ""
                 print_msg(f"[{t_str}] [{group_name}] {sender}: {text}")
 
-            # -- ACK (response to async command) --
+            # ACK (response to async command) 
             elif method == ACK:
                 seq  = headers.get("Seq", "")
                 info = headers.get("Status-Text", "")
@@ -535,13 +534,13 @@ def server_listener():
                 else:
                     print_msg("[OK]")
 
-            # -- Error from server --
+            # Error from server 
             elif method == ERROR:
                 code = headers.get("Status", "")
                 text = headers.get("Error-Text", "Unknown error")
                 print_msg(f"[ERROR {code}] {text}")
 
-            # -- User list response --
+            # User list response
             elif method == LIST_USERS:
                 try:
                     users = json.loads(body.decode(FORMAT))
@@ -555,7 +554,7 @@ def server_listener():
                 except json.JSONDecodeError:
                     print_msg(f"[USERS] {body.decode(FORMAT)}")
 
-            # -- Group list response --
+            # Group list response 
             elif method == LIST_GROUPS:
                 try:
                     grps = json.loads(body.decode(FORMAT))
@@ -569,7 +568,7 @@ def server_listener():
                 except json.JSONDecodeError:
                     print_msg(f"[GROUPS] {body.decode(FORMAT)}")
 
-            # -- PEER_INFO response: broker has given us the peer's address --
+            # PEER_INFO response: broker has given us the peer's address
             # Complete any pending file transfer now that we have the peer's details.
             elif method == PEER_INFO:
                 status = headers.get("Status", "")
@@ -642,7 +641,7 @@ Commands:
 
 
 def run_cli():
-    """Main input loop — reads commands from stdin and dispatches them."""
+    """Main input loop; reads commands from stdin and dispatches them."""
     global running
     print(HELP_TEXT)
 
@@ -717,14 +716,14 @@ def run_cli():
 def main():
     global username, running
 
-    # -- Step 1: Connect TCP + open UDP socket --
+    # Step 1: Connect TCP + open UDP socket
     try:
         connect_to_server()
     except ConnectionRefusedError:
         print(f"[ERROR] Could not connect to server at {SERVER_IP}:{TCP_PORT}")
         return
 
-    # -- Step 2: Authenticate --
+    #  Step 2: Authenticate 
     while True:
         print("\n  1) Register new account")
         print("  2) Login to existing account")
@@ -744,29 +743,29 @@ def main():
         else:
             print("Please enter 1 or 2.")
 
-    # -- Step 3: Bind P2P socket (port 0 = OS picks a free port) --
+    # Step 3: Bind P2P socket (port 0 = OS picks a free port) 
     global P2P_TCP_PORT
     p2p_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     p2p_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     p2p_sock.bind(("0.0.0.0", 0))
     P2P_TCP_PORT = p2p_sock.getsockname()[1]
 
-    # -- Step 4: Start P2P TCP listener (Paradigm 3) --
+    # Step 4: Start P2P TCP listener (Paradigm 3) 
     threading.Thread(target=p2p_receive_listener, args=(p2p_sock,), daemon=True).start()
 
-    # -- Step 5: Register P2P port with server --
+    # Step 5: Register P2P port with server 
     register_p2p_port()
 
-    # -- Step 6: Start UDP heartbeat sender (Paradigm 2) --
+    #  Step 6: Start UDP heartbeat sender (Paradigm 2) 
     threading.Thread(target=heartbeat_sender, daemon=True).start()
 
-    # -- Step 7: Start TCP server listener (Paradigm 1 inbound) --
+    # Step 7: Start TCP server listener (Paradigm 1 inbound) 
     threading.Thread(target=server_listener, daemon=True).start()
 
-    # -- Step 8: Run CLI on main thread --
+    # Step 8: Run CLI on main thread 
     run_cli()
 
-    # -- Cleanup --
+    #  Cleanup 
     running = False
     try:
         tcp_socket.close()
