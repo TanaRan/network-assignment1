@@ -19,7 +19,7 @@ TCP Framing:
     [4-byte big-endian length][message bytes ...]
 
 Design Rationale:
-    - TCP for login/messaging: guarantees delivery and ordering (Kurose Ch.3)
+    - TCP for login/messaging: guarantees delivery and ordering
     - UDP for heartbeat: lightweight presence; loss is tolerable
     - Length-prefix framing: solves TCP byte-stream boundary problem
     - Threaded client handling: concurrent clients without blocking
@@ -534,7 +534,7 @@ def handle_client(connection, address):
 #
 # Design rationale: presence/status updates do not require reliability.
 # Using UDP avoids the overhead of a full TCP connection just for heartbeats
-# and tolerates occasional packet loss gracefully (Kurose Ch.3 - UDP use cases).
+# and tolerates occasional packet loss gracefully .
 # ============================================================================
 
 def udp_listener():
