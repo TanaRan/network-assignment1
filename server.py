@@ -3,26 +3,34 @@ server.py - CSC3002F Networks Assignment Central Server
 =======================================================
 CSC3002F Networks Assignment - Stage 2
 
-Architecture: Client-Server (TCP for core chat, UDP for presence/heartbeat)
-Protocol:     CSC3002F Networks Assignment/1.0 - HTTP-inspired text headers + binary body
-Framing:      4-byte big-endian length prefix on all TCP messages
-Paradigms:    This file implements the C/S side; P2P is brokered via PEER_INFO
+Four communication paradigms:
+  1. Client-Server / TCP    Authentication, messaging, group management, P2P brokering
+                            (persistent TCP connection per client on port 5072)
+  2. Client-Server / UDP    Presence heartbeats received from clients every 10 seconds
+                            (UDP datagrams on port 5073 — loss is tolerable)
+  3. P2P / TCP              File/media transfer brokered via PEER_INFO, then direct
+                            (server only supplies the peer's IP + port)
+  4. P2P / UDP              Not used — noted in design report §3.4
 
-Message Format (CSC3002F Networks Assignment/1.0):
+Protocol:  CSC3002F Networks Assignment/1.0  (HTTP-inspired text headers + binary body)
+
+Message Format:
     METHOD|CSC3002F Networks Assignment/1.0\r\n
     Header-Key:\tHeader-Value\r\n
-    ...\r\n
+    Content-Length:\t<n>\r\n
     \r\n
     <body bytes>
 
-TCP Framing:
-    [4-byte big-endian length][message bytes ...]
+TCP Framing (solves the byte-stream boundary problem):
+    [4-byte big-endian uint32 length][message bytes ...]
+    Receiver reads 4 bytes → learns N → reads exactly N bytes.
+    UDP does not need this: each recvfrom() is one complete datagram.
 
 Design Rationale:
-    - TCP for login/messaging: guarantees delivery and ordering
-    - UDP for heartbeat: lightweight presence; loss is tolerable
-    - Length-prefix framing: solves TCP byte-stream boundary problem
-    - Threaded client handling: concurrent clients without blocking
+    - TCP for all coordination: guarantees delivery and ordering
+    - UDP for heartbeats: lightweight, loss acceptable every 10 s
+    - Length-prefix framing: avoids delimiter-escaping and partial-read issues
+    - Threaded client handling: concurrent clients without blocking the accept loop
 """
 
 import socket
@@ -30,6 +38,7 @@ import threading
 import struct
 import json
 import time
+import sqlite3
 
 # ============================================================================
 # Server Configuration
@@ -37,6 +46,7 @@ import time
 
 TCP_PORT   = 5072
 UDP_PORT   = 5073
+DB_PATH    = "chat.db"
 SERVER_IP  = socket.gethostbyname(socket.gethostname())
 TCP_ADDR   = ("0.0.0.0", TCP_PORT)
 UDP_ADDR   = ("0.0.0.0", UDP_PORT)
@@ -69,6 +79,66 @@ HEARTBEAT    = "HEARTBEAT"    # UDP presence signal
 # Data Messages - chat content
 MSG          = "MSG"          # One-to-one text message (relayed via server)
 GROUP_MSG    = "GROUP_MSG"    # Group text message
+MSG_HISTORY  = "MSG_HISTORY"  # Request message history between two users
+MEDIA        = "MEDIA"        # Server-relayed binary file transfer (P2P fallback)
+TYPING       = "TYPING"       # UDP typing indicator (sender -> server -> recipient via TCP)
+READ         = "READ"         # Read receipt: recipient opened the chat
+LEAVE_CHAT   = "LEAVE_CHAT"  # Recipient closed the chat view
+
+# ============================================================================
+# Database
+# ============================================================================
+
+def init_db():
+    con = sqlite3.connect(DB_PATH)
+    con.execute("""CREATE TABLE IF NOT EXISTS users (
+        username TEXT PRIMARY KEY,
+        password TEXT NOT NULL
+    )""")
+    con.execute("""CREATE TABLE IF NOT EXISTS messages (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender     TEXT NOT NULL,
+        recipient  TEXT,
+        group_name TEXT,
+        text       TEXT NOT NULL,
+        timestamp  REAL NOT NULL
+    )""")
+    con.commit()
+    con.close()
+
+
+def load_users_from_db():
+    """Populate the in-memory clients dict from persisted users on startup."""
+    con = sqlite3.connect(DB_PATH)
+    for username, password in con.execute("SELECT username, password FROM users"):
+        clients[username] = {
+            "password":       password,
+            "connection":     None,
+            "address":        ("", 0),
+            "visibility":     "Public",
+            "status":         "Offline",
+            "p2p_tcp_port":   0,
+            "last_heartbeat": 0,
+        }
+    con.close()
+
+
+def db_save_user(username, password):
+    con = sqlite3.connect(DB_PATH)
+    con.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
+    con.commit()
+    con.close()
+
+
+def db_save_message(sender, text, timestamp, recipient=None, group_name=None):
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        "INSERT INTO messages (sender, recipient, group_name, text, timestamp) VALUES (?, ?, ?, ?, ?)",
+        (sender, recipient, group_name, text, timestamp)
+    )
+    con.commit()
+    con.close()
+
 
 # ============================================================================
 # Shared Server State (thread-safe via lock)
@@ -203,7 +273,7 @@ def send_to(connection, method, headers=None, body=b""):
 
 
 def send_ack(connection, seq="0"):
-    send_to(connection, ACK, {"Seq": seq})
+    send_to(connection, ACK, {"Sequence_Num": seq})
 
 
 def send_error(connection, code, text):
@@ -294,6 +364,7 @@ def entry_sequence(connection, address):
                     "p2p_tcp_port":   0,
                     "last_heartbeat": time.time(),
                 }
+                db_save_user(username, password)
                 send_to(connection, ACK, {"Status": "201", "Status-Text": "Account created"})
                 print(f"[REGISTER] New user: {username} from {address}")
                 return username
@@ -374,9 +445,9 @@ def handle_client(connection, address):
                 send_to(connection, LIST_GROUPS,
                         {"Content-Type": "application/json"}, group_list)
 
-            # P2P port registration 
-            # Client registers its P2P TCP port with the server so other
-            # peers can look it up via PEER_INFO for direct file/media transfer.
+            # P2P port registration
+            # Client registers its P2P TCP listener port so that peers can look
+            # it up via PEER_INFO and connect directly for file/media transfer.
             elif method == "REGISTER_PORTS":
                 try:
                     port_data = json.loads(body.decode(FORMAT))
@@ -388,9 +459,9 @@ def handle_client(connection, address):
                     send_error(connection, "400",
                                "REGISTER_PORTS body must be JSON {p2p_tcp_port}")
 
-            # P2P brokering 
-            # Client A asks for Client B's IP and ports so they can connect
-            # directly (P2P/TCP for file transfer, P2P/UDP for media streaming).
+            # P2P brokering
+            # Client A asks for Client B's IP and P2P port so they can connect
+            # directly (P2P/TCP for file transfer).
             elif method == PEER_INFO:
                 target = headers.get("To", "").strip()
                 with clients_lock:
@@ -470,24 +541,29 @@ def handle_client(connection, address):
             # then direct socket connection - not handled here).
             elif method == MSG:
                 to_user  = headers.get("To", "").strip()
+                seq      = headers.get("Sequence_Num", "0")
                 msg_body = body.decode(FORMAT)
                 with clients_lock:
                     if to_user not in clients or clients[to_user]["connection"] is None:
                         send_error(connection, "404",
                                    f"User '{to_user}' is offline")
                     else:
+                        ts = str(time.time())
                         fwd_headers = {
-                            "From":      username,
-                            "To":        to_user,
-                            "Timestamp": str(time.time()),
+                            "From":         username,
+                            "To":           to_user,
+                            "Timestamp":    ts,
+                            "Sequence_Num": seq,
                         }
                         send_to(clients[to_user]["connection"],
                                 MSG, fwd_headers, msg_body)
-                        send_ack(connection)
+                        db_save_message(username, msg_body, float(ts), recipient=to_user)
+                        send_ack(connection, seq=seq)
 
             # Group message relay (Client-Server / TCP)
             elif method == GROUP_MSG:
                 group_name = headers.get("Group", "").strip()
+                seq        = headers.get("Sequence_Num", "0")
                 msg_body   = body.decode(FORMAT)
                 with groups_lock:
                     if group_name not in groups:
@@ -513,7 +589,64 @@ def handle_client(connection, address):
                                 delivered += 1
                             except OSError:
                                 pass  # Member disconnected; cleaned up on their thread
-                send_ack(connection, seq=str(delivered))
+                db_save_message(username, msg_body, time.time(), group_name=group_name)
+                send_to(connection, ACK, {"Sequence_Num": seq, "Delivered": str(delivered)})
+
+            # Leave-chat notification: forward so partner clears active status
+            elif method == LEAVE_CHAT:
+                target = headers.get("To", "").strip()
+                with clients_lock:
+                    conn = clients[target]["connection"] if target in clients else None
+                if conn:
+                    try:
+                        send_to(conn, LEAVE_CHAT, {"From": username})
+                    except OSError:
+                        pass
+
+            # Read receipt: forward to the other user so they can show ✓✓
+            elif method == READ:
+                target = headers.get("To", "").strip()
+                with clients_lock:
+                    conn = clients[target]["connection"] if target in clients else None
+                if conn:
+                    try:
+                        send_to(conn, READ, {"From": username})
+                    except OSError:
+                        pass
+
+            # Server-relayed media fallback (when P2P TCP transfer fails)
+            elif method == MEDIA:
+                to_user = headers.get("To", "").strip()
+                with clients_lock:
+                    conn = clients[to_user]["connection"] if to_user in clients else None
+                if conn:
+                    try:
+                        fwd_headers = {
+                            "From":         username,
+                            "Filename":     headers.get("Filename", "file"),
+                            "Content-Type": headers.get("Content-Type", "application/octet-stream"),
+                        }
+                        send_to(conn, MEDIA, fwd_headers, body)
+                        send_ack(connection)
+                        print(f"[MEDIA RELAY] {username} -> {to_user} ({len(body)} bytes)")
+                    except OSError:
+                        send_error(connection, "503", "Could not relay media to target")
+                else:
+                    send_error(connection, "404", f"User '{to_user}' is offline")
+
+            # Message history request
+            elif method == MSG_HISTORY:
+                target = headers.get("To", "").strip()
+                con = sqlite3.connect(DB_PATH)
+                rows = con.execute(
+                    """SELECT sender, text, timestamp FROM messages
+                       WHERE (sender=? AND recipient=?) OR (sender=? AND recipient=?)
+                       ORDER BY timestamp""",
+                    (username, target, target, username)
+                ).fetchall()
+                con.close()
+                history = [{"sender": r[0], "text": r[1], "timestamp": r[2]} for r in rows]
+                send_to(connection, MSG_HISTORY, {"Status": "200"}, json.dumps(history))
 
             else:
                 send_error(connection, "405", f"Unknown method: {method}")
@@ -538,15 +671,27 @@ def handle_client(connection, address):
 # ============================================================================
 
 def udp_listener():
-    """Listen for UDP heartbeat datagrams and PING/PONG messages.
+    """Listen for UDP datagrams from clients on port 5073.
 
-    UDP naturally preserves datagram boundaries, so no length-prefix framing
-    is needed here — each recvfrom() call returns exactly one datagram.
+    UDP preserves datagram boundaries naturally — no length-prefix framing needed.
+    Each recvfrom() call returns exactly one complete message.
 
-    Expected heartbeat format:
-        HEARTBEAT|CSC3002F Networks Assignment/1.0\r\n
-        From:\t<username>\r\n
-        \r\n
+    Two message types handled:
+
+    HEARTBEAT — periodic presence signal sent by every client every 10 s.
+        Reads the From header, updates clients[sender]["last_heartbeat"] to the
+        current time, and sets status to "Available".
+        Wire format:
+            HEARTBEAT|CSC3002F Networks Assignment/1.0\\r\\n
+            From:\\t<username>\\r\\n
+            Content-Length:\\t0\\r\\n
+            \\r\\n
+
+    PING — stateless connectivity check.
+        Immediately sends a PONG datagram back to the same address.
+        No client lookup or state update required.
+
+    TYPING — forwarded as TCP to the target client's connection (chat presence).
     """
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_sock.bind(UDP_ADDR)
@@ -564,8 +709,19 @@ def udp_listener():
                         clients[sender]["last_heartbeat"] = time.time()
                         clients[sender]["status"]         = "Available"
 
+            elif msg["method"] == TYPING:
+                sender = msg["headers"].get("From", "").strip()
+                target = msg["headers"].get("To",   "").strip()
+                with clients_lock:
+                    conn = clients[target]["connection"] if target in clients else None
+                if conn:
+                    try:
+                        tcp_send(conn, encode_message(TYPING, {"From": sender}))
+                    except OSError:
+                        pass
+
             elif msg["method"] == PING:
-                # Stateless PONG reply - no need to look up the client
+                # Stateless connectivity check — reply with PONG, no state update
                 sender = msg["headers"].get("From", "")
                 pong   = encode_message(PONG, {"To": sender})
                 udp_sock.sendto(pong, addr)
@@ -580,7 +736,15 @@ def udp_listener():
 HEARTBEAT_TIMEOUT = 30  # seconds before marking a client Idle
 
 def heartbeat_reaper():
-    """Background thread — marks clients Idle when heartbeats stop."""
+    """Background thread — marks clients Idle when HEARTBEAT signals stop arriving.
+
+    Wakes every 10 seconds. If a client has an active connection but its
+    last_heartbeat timestamp is more than HEARTBEAT_TIMEOUT (30) seconds old,
+    its status is set to "Idle". This detects crashed or silently-disconnected
+    clients that never sent a formal LOGOUT.
+
+    A crashed client is marked Idle within 10–40 seconds of the crash.
+    """
     while True:
         time.sleep(10)
         now = time.time()
@@ -618,6 +782,9 @@ def start_tcp_server():
 
 def main():
     print("[STARTING] CSC3002F Networks Assignment Server")
+    init_db()
+    load_users_from_db()
+    print(f"[DB] Loaded {len(clients)} registered user(s) from {DB_PATH}")
     threading.Thread(target=udp_listener,    daemon=True).start()
     threading.Thread(target=heartbeat_reaper, daemon=True).start()
     start_tcp_server()
