@@ -1,157 +1,177 @@
 """
-client.py - CSC3002F Networks Assignment Client
-================================================
-CSC3002F Networks Assignment - Stage 2
+client_final.py - The client used for all Client-Server operations.
 
-Four communication paradigms:
+Consists of 4 communication paradigms:
+1. Client-Server & TCP -    The server listens for incoming TCP connections from clients. 
+                            Each client connection is handled in a separate thread, allowing for concurrent communication. 
+                            The server can receive messages from clients and send responses back to them. Uses port 5072.
+2. Client-Server & UDP -    The server listens for incoming UDP datagrams from clients. 
+                            Presence heartbeats received from clients every 10 seconds.
+                            Uses port 5073.
+3. P2P & TCP -              The server can also act as a broker in a P2P network, facilitating direct TCP connections between clients via PEER_INFO.
+                            Files and media can be shared directly between clients without routing through the server.
+4. P2P & UDP -              Not used in this implementation.
 
-  1. Client-Server / TCP    Login, messaging, group management, discovery
-                            (persistent TCP connection to server on port 5072)
+Protocol Description:
+CSC3002F Networks Assignment/1.0 (HTTP inspired protocol utilising text headers and binary body)
 
-  2. Client-Server / UDP    Presence HEARTBEAT sent every 10 seconds
-                            (UDP datagrams to server on port 5073)
+Message Format:
+    METHOD|CSC3002F Networks Assignment/1.0\r\n
+    Header-Key:\tHeader-Value\r\n
+    Content-Length:\t<n>\r\n
+    \r\n
+    <body bytes>
 
-  3. P2P / TCP              Direct file/media transfer between peers
-                            (client opens a TCP listener; connects directly after
-                             obtaining the peer's address via PEER_INFO from server)
-
-  4. P2P / UDP              Not used — noted in design report §3.4
-
-
-Protocol:   CSC3002F Networks Assignment/1.0  (HTTP-inspired text headers + binary body)
-Framing:    4-byte big-endian length prefix on ALL TCP messages (client-server and P2P)
-            UDP preserves datagram boundaries natively — no framing needed
+TCP Framing (solves the byte-stream boundary problem):
+    [4-byte big-endian uint32 length][message bytes...]
+    Receiver reads 4 bytes then learns N then reads exactly N bytes.
+    UDP doesn't require framing as each datagram is a discrete message (each recvfrom() call returns one complete datagram).
 
 Usage:
-    python client.py                        # connects to localhost
-    python client.py 192.168.1.10           # connects to specified server IP
+    python client_final.py                  #connects to localhost
+   
+    python client_final.py <ip_address>     #connects to a specified server IP
+            e.g     python client_final.py 192.166.1.10
+
+Note: if "python" doesn't work, try "python3"
 """
 
-import socket
-import threading
-import struct
-import json
-import mimetypes
-import os
-import sys
-import time
-import queue
-import math
-import select
-import termios
-import tty
+import socket      # For TCP and UDP communication via sockets
+import threading   # Background threads, Lock
+import struct      # 4-byte length prefix encoding for packing and unpacking message lengths in TCP framing
+import json        # Body serialisation
+import mimetypes   # Detect MIME type from file extension (for P2P transfers)
+import os          # File path operations (os.path.isfile, os.path.basename, etc.)
+import sys         # sys.argv (command-line args), sys.stdin, sys.stdout
+import time        # Timestamps, sleep
+import queue       # Thread-safe message passing (history_queue, ack_queue)
+import math        # math.ceil for pagination calculations
+import select      # Non-blocking I/O (select.select on stdin in raw mode)
 
-# ============================================================================
-# Configuration
-# ============================================================================
+#Enable raw terminal mode used in the chat interface
+import termios     # Save/restore terminal settings before/after raw mode
+import tty         # tty.setraw() enable character-at-a-time terminal input
 
-SERVER_IP       = sys.argv[1] if len(sys.argv) > 1 else socket.gethostbyname(socket.gethostname())
-TCP_PORT        = 5072
-UDP_PORT        = 5073
-P2P_TCP_PORT    = 6000          # This client's P2P listener port (file/media receive)
-FORMAT          = "utf-8"
-CRLF            = "\r\n"
-VERSION         = "CSC3002F Networks Assignment/1.0"
-HEARTBEAT_INTERVAL = 10         # seconds between UDP presence signals
+###CONFIGURATION
 
-# ============================================================================
-# Protocol Constants  (must mirror server.py)
-# ============================================================================
+FORMAT = "utf-8"    #text encoding string
+CRLF = "\r\n"       #line terminator used in message formatting, consistent with HTTP standards.
+PROTOCOL_VERSION = "CSC3002F Networks Assignment/1.0"   #protocol versions string embedded in every message's request line.
+TCP_PORT = 5072 #Port number on which the server listens for persistent client TCP connections. 
+                #Clients connect to this port for all command and message exchanges.
+                #5072 chosen as it is not commonly used by other applications and is in the registered port range (1024-49151), minimizing potential conflicts. (Ports 5000 and up recommended by lecturer)
+UDP_PORT = 5073 #Port number on which the server listens for UDP datagrams, specifically for presence heartbeats from clients and pings.
+P2P_TCP_PORT= 6000  #This client's P2P listener port (file/media receive). This is an initial placeholder. The actual port is overwritten with whatever the OS assigns when binding to port 0.
+SERVER_IP = sys.argv[1] if len(sys.argv) > 1 else socket.gethostbyname(socket.gethostname()) #Server IP address to connect to, defaulting to localhost if not provided as a command-line argument.
+HEARTBEAT_INTERVAL = 10 #seconds betweend UDP presence signals
 
-REGISTER      = "REGISTER"
-LOGIN         = "LOGIN"
-LOGOUT        = "LOGOUT"
-CREATE_GROUP  = "CREATE_GROUP"
-JOIN_GROUP    = "JOIN_GROUP"
-LEAVE_GROUP   = "LEAVE_GROUP"
-LIST_USERS    = "LIST_USERS"
-LIST_GROUPS   = "LIST_GROUPS"
-ACK           = "ACK"
-ERROR         = "ERROR"
-PEER_INFO     = "PEER_INFO"
-HEARTBEAT     = "HEARTBEAT"   # UDP periodic presence signal
-MSG           = "MSG"
-GROUP_MSG     = "GROUP_MSG"
-MSG_HISTORY       = "MSG_HISTORY"
+###PROTOCOL CONSTANTS (MIRRORS server_final.py)
+
+#Command Messages
+REGISTER = "REGISTER"
+LOGIN = "LOGIN"
+LOGOUT = "LOGOUT"
+CREATE_GROUP = "CREATE_GROUP"
+JOIN_GROUP = "JOIN_GROUP"
+LEAVE_GROUP = "LEAVE_GROUP"
+LIST_USERS = "LIST_USERS"
+LIST_GROUPS  = "LIST_GROUPS"
+
+#Control Messages
+PEER_INFO = "PEER_INFO"
+HEARTBEAT = "HEARTBEAT"
+ACK = "ACK"
+ERROR = "ERROR"
+PING = "PING"
+PONG = "PONG"
+
+#Data Messages
+MSG = "MSG"
+MSG_HISTORY = "MSG_HISTORY"
+GROUP_MSG = "GROUP_MSG"
 GROUP_MSG_HISTORY = "GROUP_MSG_HISTORY"
-MEDIA         = "MEDIA"        # Server-relayed binary file (P2P fallback)
-READ          = "READ"
-LEAVE_CHAT    = "LEAVE_CHAT"
+READ = "READ"
+MEDIA = "MEDIA"
+LEAVE_CHAT = "LEAVE_CHAT"
 
-# P2P-specific methods (CSC3002F Networks Assignment-P2P/1.0)
-MEDIA_META    = "MEDIA_META"    # Sender announces file: name, size, type
-MEDIA_DATA    = "MEDIA_DATA"    # Raw file bytes follow in body
+#P2P Methods
+MEDIA_META = "MEDIA_META"    # Sender announces file: name, size, type
+MEDIA_DATA = "MEDIA_DATA"    # Raw file bytes follow in body
 
-P2P_VERSION   = "CSC3002F Networks Assignment-P2P/1.0"
+P2P_VERSION= "CSC3002F Networks Assignment-P2P/1.0"
 
-# ============================================================================
-# Client State
-# ============================================================================
+###CLIENT STATE
 
-username       = None           # Set after successful login/register
-tcp_socket     = None           # Persistent TCP connection to server
-udp_socket     = None           # UDP socket for heartbeats
-running        = True           # False when client is shutting down
-print_lock     = threading.Lock()   # Prevent interleaved terminal output
-current_chat    = None           # Username of the open chat, or None
-history_queue   = queue.Queue()  # Delivers MSG_HISTORY responses to the CLI thread
-ack_queue       = queue.Queue()  # Captures ACKs while in chat mode for ✓ display
-chat_messages        = []    # Full message list for the open chat
-chat_page            = 0     # Current page index (0 = oldest)
-CHAT_PAGE_SIZE       = 10
-partner_active       = False # True when chat partner has our chat open (READ received)
-current_chat_is_group = False # True when current_chat is a group name, not a username
-chat_notice          = ""    # One-line status shown at bottom of chat (errors, etc.)
-_seq_counter         = 0
-_seq_lock            = threading.Lock()
+username = None                 # Set after successful login/register
+tcp_socket = None               # Persistent TCP connection to server
+udp_socket = None               # UDP socket for heartbeats
+running = True                  # False when client is shutting down
+print_lock = threading.Lock()   # Prevent interleaved terminal output. Any output to the terminal acquires this lock
+current_chat = None             # Username of the open chat, or None. If none, user is at Command Line Interface
+history_queue = queue.Queue()   # Delivers MSG_HISTORY responses to the CLI thread
+ack_queue = queue.Queue()       # Captures ACKs while in chat mode for active display. Thread-safe FIFO queue.
+chat_messages = []              # Full message list for the open chat
+chat_page = 0                   # Current page index (0 = oldest)
+CHAT_PAGE_SIZE = 10
+partner_active = False          # True when chat partner has our chat open (READ Data Message received)
+current_chat_is_group = False   # True when current_chat is a group name, not a username
+chat_notice = ""                # One-line status shown at bottom of chat (errors, etc.)
+_seq_counter = 0
+_seq_lock = threading.Lock()    #Makes increments atomic across threads.
 
 
 def _next_seq():
-    """Return a unique, ever-increasing sequence number string for MSG/GROUP_MSG."""
+    """
+    Return a unique, ever-increasing sequence number string for MSG/GROUP_MSG.
+    Thread-safe increment-and-return sequence.
+    """
     global _seq_counter
     with _seq_lock:
         _seq_counter += 1
         return str(_seq_counter)
 
-# ============================================================================
-# TCP Framing (4-byte big-endian length prefix)
-# ============================================================================
-
-def tcp_send(sock, raw_bytes):
-    """Send a length-prefixed message over TCP."""
-    prefix = struct.pack(">I", len(raw_bytes))
-    sock.sendall(prefix + raw_bytes)
-
-
-def tcp_recv(sock):
-    """Receive exactly one framed TCP message.
-    Returns None if the connection was closed cleanly.
+###TCP FRAMING (4-BYTE BIG-ENDIAN LENGTH PREFIX)
+#Almost identical to implementation in server_final.py ("socket" replaces "connection")
+def tcp_send(socket, raw_bytes):
     """
-    raw_len = _recv_exact(sock, 4)
+    Prefix message with 4-byte big-endian length and send over TCP.
+    """
+    length_prefix = struct.pack(">I", len(raw_bytes))   #converts an integer n to exactly 4 bytes in big-endian byte order (> = big-endian, I = unsigned 32-bit int). 
+    socket.sendall(length_prefix + raw_bytes)       #sends all bytes, retrying internally if the OS only accepts part of the data in one system call 
+                                                        #sendall guarantees the entire payload is submitted to the kernel before returning.
+
+def tcp_recv(socket):
+    """
+    Receive exactly one framed TCP message.
+    Returns None if the connection is closed cleanly.
+    """
+    raw_len = _recv_exact(socket, 4)
     if raw_len is None:
         return None
     n = struct.unpack(">I", raw_len)[0]
-    return _recv_exact(sock, n)
+    return _recv_exact(socket, n)
 
 
-def _recv_exact(sock, n):
-    """Read exactly n bytes, handling TCP partial reads."""
+def _recv_exact(socket, n):
+    """
+    Read exactly n bytes from a socket, handling partial reads.
+    The loop keeps reading until exactly n bytes have been accumulated. n - len(buf) calculates the remaining bytes needed on each iteration.
+    """
     buf = b""
     while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
+        chunk = socket.recv(n - len(buf))
         if not chunk:
             return None
         buf += chunk
     return buf
 
-# ============================================================================
-# CSC3002F Networks Assignment/1.0 Message Encoding / Decoding
-# ============================================================================
+###MESSAGE ENCODING AND DECODING
+def encode_message(method, headers=None, body=b"", version=PROTOCOL_VERSION):
+    """
+    Encode a CSC3002F Networks Assignment/1.0 (or CSC3002F Networks Assignment-P2P/1.0) message.
+    Allows P2P messages to use P2P_VERSION without a separate function. The server's encode_message always uses PROTOCOL_VERSION (hardcoded), since the server only speaks the client-server protocol.
 
-def encode_message(method, headers=None, body=b"", version=VERSION):
-    """Encode a CSC3002F Networks Assignment/1.0 (or CSC3002F Networks Assignment-P2P/1.0) message.
-
-    Wire format:
+    Message format:
         METHOD|VERSION\r\n
         Key:\tValue\r\n
         Content-Length:\t<n>\r\n
@@ -169,31 +189,39 @@ def encode_message(method, headers=None, body=b"", version=VERSION):
 
 
 def decode_message(raw):
-    """Decode a CSC3002F Networks Assignment/1.0 message from raw bytes.
-
-    Returns: {"method": str, "version": str, "headers": dict, "body": bytes}
     """
-    separator = (CRLF + CRLF).encode(FORMAT)
-    sep_idx = raw.find(separator)
-    if sep_idx == -1:
+    Decode a message from raw bytes.
+    Returns:
+        {"method": str, "version": str, "headers": dict, "body": bytes}
+    """
+    separator = (CRLF + CRLF).encode(FORMAT) #CRLF + CRLF is "\r\n\r\n", which marks the end of the header block and the start of the body.
+    sep_idx = raw.find(separator) #searches separator sequence in the raw bytes and returns its byte offset, or -1 if not found.
+    
+    if sep_idx == -1:   #separator sequence not found
         raise ValueError("Malformed message: missing header/body separator")
 
-    header_block = raw[:sep_idx].decode(FORMAT)
-    body         = raw[sep_idx + len(separator):]
-    lines        = header_block.split(CRLF)
+    header_block = raw[:sep_idx].decode(FORMAT)     #Everything before the separator 
+    body= raw[sep_idx + len(separator):]   #Everything after the separator.
+    lines= header_block.split(CRLF)
 
+    if not lines:
+        raise ValueError("Malformed message: empty header block")
+
+    # Parse request line: METHOD|VERSION
     request_line = lines[0]
     if "|" not in request_line:
         raise ValueError(f"Malformed request line: {request_line!r}")
-    method, version = request_line.split("|", 1)
+    method, version = request_line.split("|", 1) #Splits the request line into method and version at the first occurrence of "|". The maxsplit=1 argument ensures that if the version string contains a "|", it won't be split further.
 
+    # Parse headers
     headers = {}
     for line in lines[1:]:
         if not line:
             continue
         if ":\t" in line:
             key, value = line.split(":\t", 1)
-        elif ":" in line:
+        elif ":" in line:                       #handles clients that may omit the tab and only use a colon
+
             key, value = line.split(":", 1)
             value = value.strip()
         else:
@@ -202,22 +230,24 @@ def decode_message(raw):
 
     return {"method": method, "version": version, "headers": headers, "body": body}
 
-# ============================================================================
-# High-level send helpers (Client → Server over TCP)
-# ============================================================================
+###HIGH LEVEL SEND HELPERS (CLIENT TO SERVER OVER TCP)
 
 def send_to_server(method, headers=None, body=b""):
-    """Encode and send a CSC3002F Networks Assignment/1.0 message to the server over TCP."""
+    """
+    Encode and send a CSC3002F Networks Assignment/1.0 message to the server over TCP.
+    This is the client-side equivalent of "send_to" in "server_final.py".
+    Uses module-level tcp_socket.
+    """
     raw = encode_message(method, headers or {}, body)
     tcp_send(tcp_socket, raw)
 
 
 def send_request_recv_response(method, headers=None, body=b""):
-    """Send a request to the server and block until a response arrives.
-
+    """
+    Used only during authetication (before "server_listener" starts).
+    Sends a request to the server and blocks the same thread waiting for the server's response until a response arrives.
     Returns the decoded response message dict, or None on error.
-    Note: simple request-reply only; inbound MSG/GROUP_MSG are handled
-    by the background listener thread, not here.
+    Note: simple request-reply only; inbound MSG/GROUP_MSG are handled by the background listener thread.
     """
     send_to_server(method, headers, body)
     raw = tcp_recv(tcp_socket)
@@ -225,23 +255,27 @@ def send_request_recv_response(method, headers=None, body=b""):
         return None
     return decode_message(raw)
 
-# ============================================================================
-# Pretty printer (thread-safe)
-# ============================================================================
+###THREAD SAFE PRETTY PRINT
 
 def print_msg(text):
     with print_lock:
         if current_chat:
-            return  # Chat view is managed exclusively by render_chat
+            return  #Chat view is managed exclusively by render_chat when terminal is in raw mode.
+                    #Background messages are silently dropped while in chat view (live messages arrive via chat_messages rather) to avoid corrupting the display.
+                    #Outside a chat, the function prints the message on a new line (\n to avoid corrupting the current input), then re-prints the CLI prompt.
+                    #Re-printing the prompt is necessary because the print() of the message scrolls the terminal, leaving the prompt behind.
+
         print(f"\n{text}")
         print(f"[{username}]> ", end="", flush=True)
 
-# ============================================================================
-# Paradigm 1: Client-Server / TCP
-# ============================================================================
+#==============================================================
+###PARADIGM 1: CLIENT-SERVER & TCP
+#==============================================================
 
 def do_register(uname, passwd):
-    """Send REGISTER and return True on success."""
+    """
+    Send REGISTER Command Message and return True on success.
+    """
     body = json.dumps({"username": uname, "password": passwd})
     resp = send_request_recv_response(REGISTER, {}, body)
     if resp is None:
@@ -256,7 +290,9 @@ def do_register(uname, passwd):
 
 
 def do_login(uname, passwd):
-    """Send LOGIN and return True on success."""
+    """
+    Send LOGIN Command Message and return True on success.
+    """
     body = json.dumps({"username": uname, "password": passwd})
     resp = send_request_recv_response(LOGIN, {}, body)
     if resp is None:
@@ -270,19 +306,25 @@ def do_login(uname, passwd):
         return False
 
 def cmd_list_users():
-    """Request and display the list of online users."""
+    """
+    Request and display the list of online users.
+    """
     send_to_server(LIST_USERS, {"From": username})
     # Response arrives on the listener thread and is printed there
 
 
 def cmd_list_groups():
-    """Request and display the list of available groups."""
+    """
+    Request and display the list of available groups.
+    """
     send_to_server(LIST_GROUPS, {"From": username})
 
 
 def render_chat(to_user, input_buf=""):
-    """Clear the screen and redraw the entire chat view using \r\n for raw mode."""
-    total_pages = max(1, math.ceil(len(chat_messages) / CHAT_PAGE_SIZE))
+    """
+    Clear the screen and redraw the entire chat view using \r\n for raw mode.
+    """
+    total_pages = max(1, math.ceil(len(chat_messages) / CHAT_PAGE_SIZE)) #ensures there is always at least one page even when chat_messages is empty (avoids zero-division in display).
     status = "  • active" if partner_active else ""
     sep = "─" * 40
     lines = [
@@ -290,13 +332,13 @@ def render_chat(to_user, input_buf=""):
         f"  {to_user}{status}",
         sep,
     ]
-    start = chat_page * CHAT_PAGE_SIZE
-    page_msgs = chat_messages[start:start + CHAT_PAGE_SIZE]
+    start = chat_page * CHAT_PAGE_SIZE                          
+    page_msgs = chat_messages[start:start + CHAT_PAGE_SIZE] #Slices the message list to get only the current page's messages.
     if not chat_messages:
         lines.append("  (no previous messages)")
     for m in page_msgs:
-        t = time.strftime("%H:%M:%S", time.localtime(m["timestamp"]))
-        who = "you" if m["sender"] == username else m["sender"]
+        t = time.strftime("%H:%M:%S", time.localtime(m["timestamp"]))   #Converts a Unix timestamp to local time and formats it as HH:MM:SS.
+        who = "you" if m["sender"] == username else m["sender"]         #Your own messages show as "you" for readability.
         lines.append(f"  [{t}] {who}: {m['text']}")
     lines += [
         sep,
@@ -306,26 +348,35 @@ def render_chat(to_user, input_buf=""):
     if chat_notice:
         lines.append(f"  {chat_notice}")
     # Build as one write with \r\n so raw mode doesn't misalign lines
-    out = "\033[2J\033[H" + "\r\n".join(lines) + f"\r\n[{username} -> {to_user}]> {input_buf}"
-    sys.stdout.write(out)
-    sys.stdout.flush()
+    out = "\033[2J\033[H" + "\r\n".join(lines) + f"\r\n[{username} -> {to_user}]> {input_buf}"      #\033[2J is an ANSI escape code that erases the entire screen. \033[H is an ANSI escape code which moves the cursor to row 1, column 1 (top-left).
+    sys.stdout.write(out)       #Writes entire output that has been built as one string.
+    sys.stdout.flush()          #Forces the Python output buffer to the Os immediately
 
 
 def update_input_line(to_user, input_buf):
-    """Overwrite only the input line at the bottom - avoids full redraw on each keypress."""
-    sys.stdout.write(f"\r\033[K[{username} -> {to_user}]> {input_buf}")
+    """
+    Overwrite only the input line at the bottom - avoids full redraw on each keypress.
+    """
+    sys.stdout.write(f"\r\033[K[{username} -> {to_user}]> {input_buf}") #\033[K is ANSI for: erase from cursor to end of line.
     sys.stdout.flush()
 
 
 def cmd_send_msg(to_user, text):
-    """Send a one-to-one text message via server relay."""
+    """
+    Send a one-to-one text message via server relay.
+    """
     send_to_server(MSG, {"From": username, "To": to_user, "Sequence_Num": _next_seq()}, text)
 
 
 def cmd_open_chat(to_user):
-    """Enter a persistent chat with raw terminal input and 5-second auto-refresh."""
+    """
+    Enter a persistent chat with raw terminal input and 5-second auto-refresh.
+    """
     global current_chat, chat_messages, chat_page, partner_active, chat_notice
 
+    #The history request is sent, then the function blocks on history_queue.get(timeout=5).
+    #The background server_listener thread will put the response into history_queue when it arrives. 
+    #If nothing arrives within 5 seconds, the function aborts.
     send_to_server(MSG_HISTORY, {"From": username, "To": to_user})
     try:
         history = history_queue.get(timeout=5)
@@ -333,22 +384,33 @@ def cmd_open_chat(to_user):
         print("[ERROR] Could not fetch message history.")
         return
 
-    chat_messages       = list(history)
-    chat_page           = max(0, math.ceil(len(chat_messages) / CHAT_PAGE_SIZE) - 1)
+    chat_messages = list(history)       #makes a copy (history is the list decoded from JSON)
+    chat_page = max(0, math.ceil(len(chat_messages) / CHAT_PAGE_SIZE) - 1)  #Starts at the last page so the user sees the most recent messages first
     partner_active = False
-    chat_notice    = ""
-    current_chat   = to_user
+    chat_notice = ""
+
+    #Setting current_chat before sending READ is important: once current_chat is set, the server_listener thread will append incoming messages to chat_messages instead of printing them. 
+    #The READ signal notifies the partner that this chat is now open.
+    current_chat = to_user
 
     send_to_server(READ, {"From": username, "To": to_user})
 
-    input_buf   = ""
+    input_buf = ""
     last_render = 0.0
-    REFRESH     = 5.0
-    fd          = sys.stdin.fileno()
-    old_tty     = termios.tcgetattr(fd)
+    REFRESH = 5.0
+    
+    #Raw terminal mode
+    fd = sys.stdin.fileno()
+    old_tty = termios.tcgetattr(fd) #saves the current terminal settings so they can be restored later.
 
     try:
-        tty.setraw(fd)
+        tty.setraw(fd)  #switches the terminal to raw mode:
+        
+        #select.select([sys.stdin], [], [], 0.1) waits up to 0.1 seconds for stdin to have data available. 
+        #Returns three lists: (readable, writable, exceptional). 
+        #If sys.stdin is in the readable list, a character is available. 
+        #The 0.1-second timeout allows the loop to check running regularly and trigger the periodic re-render check.
+        #sys.stdin.read(1) reads exactly one character.
         while running:
             now = time.time()
             if now - last_render >= REFRESH:
@@ -361,12 +423,17 @@ def cmd_open_chat(to_user):
 
             ch = sys.stdin.read(1)
 
+            #Enter Key (removes leading/trailing whitespace from typed text)
             if ch in ('\r', '\n'):
                 line        = input_buf.strip()
                 input_buf   = ""
                 chat_notice = ""
                 total_pages = max(1, math.ceil(len(chat_messages) / CHAT_PAGE_SIZE))
 
+            #Send message via "cmd_send_message". Block on ack_queue.get(timeout=3) while waiting for server's ACK.
+            #If ACK arrives within 3 seconds, add the message to chat_messages locally (server also saves this to database)
+            #Update page to show latest message.
+            #If ACK does not arrive in 3 seconds, set chat_notice to show an error.
                 if line == "/back":
                     break
                 elif line == "/prev":
@@ -405,8 +472,12 @@ def cmd_open_chat(to_user):
                 update_input_line(to_user, input_buf)
 
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_tty)
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_tty) #Cleanup
 
+#After the loop: notify the partner we have left, clear state, then clear the screen.
+#\033[2J clears the screen. 
+#\033[999;1H moves the cursor to row 999, column 1; the terminal clamps this to the last visible row, so the prompt from run_cli will appear at the bottom of the terminal rather than the top.
+#This prevents the prompt from being pushed into the scrollback buffer by subsequent output from background threads.
     send_to_server(LEAVE_CHAT, {"From": username, "To": to_user})
     current_chat   = None
     partner_active = False
@@ -416,12 +487,22 @@ def cmd_open_chat(to_user):
 
 
 def cmd_group_msg(group_name, text):
-    """Send a group message via server relay."""
+    """
+    Send a group message via server relay.
+    """
     send_to_server(GROUP_MSG, {"From": username, "Group": group_name, "Sequence_Num": _next_seq()}, text)
 
 
 def cmd_open_group_chat(group_name):
-    """Enter a persistent group chat with the same raw terminal interface as 1:1."""
+    """
+    Enter a persistent group chat with the same raw terminal interface as 1:1.
+    Identical structure to cmd_open_chat with 4 differences:
+        Sends GROUP_MSG_HISTORY with a Group header instead of MSG_HISTORY with To.
+        Sets current_chat_is_group = True so server_listener routes incoming GROUP_MSG to chat_messages.
+	    Uses cmd_group_msg instead of cmd_send_msg when Enter is pressed.
+        Does not send READ or LEAVE_CHAT (those are 1:1 concepts - there is no partner_active in group mode).
+    display = f"[group] {group_name}" is passed to render_chat and update_input_line so the chat header and prompt clearly indicate this is a group context.
+    """
     global current_chat, current_chat_is_group, chat_messages, chat_page, chat_notice
 
     send_to_server(GROUP_MSG_HISTORY, {"From": username, "Group": group_name})
@@ -431,18 +512,18 @@ def cmd_open_group_chat(group_name):
         print("[ERROR] Could not fetch group message history.")
         return
 
-    chat_messages         = list(history)
-    chat_page             = max(0, math.ceil(len(chat_messages) / CHAT_PAGE_SIZE) - 1)
-    chat_notice           = ""
-    current_chat          = group_name
+    chat_messages = list(history)
+    chat_page = max(0, math.ceil(len(chat_messages) / CHAT_PAGE_SIZE) - 1)
+    chat_notice = ""
+    current_chat = group_name
     current_chat_is_group = True
-    display               = f"[group] {group_name}"
+    display = f"[group] {group_name}"
 
-    input_buf   = ""
+    input_buf = ""
     last_render = 0.0
-    REFRESH     = 5.0
-    fd          = sys.stdin.fileno()
-    old_tty     = termios.tcgetattr(fd)
+    REFRESH = 5.0
+    fd = sys.stdin.fileno()
+    old_tty = termios.tcgetattr(fd)
 
     try:
         tty.setraw(fd)
@@ -512,44 +593,76 @@ def cmd_open_group_chat(group_name):
 
 
 def cmd_create_group(group_name):
-    """Create a new group chat."""
+    """
+    Create a new group chat.
+    Fire-and-forget: the ACK/ERROR response arrives asynchronously on server_listener and is printed there. 
+    Same pattern for cmd_join_group and cmd_leave_group.
+    """
     body = json.dumps({"group_name": group_name})
     send_to_server(CREATE_GROUP, {"From": username}, body)
 
 
 def cmd_join_group(group_name):
-    """Join an existing group chat."""
+    """
+    Join an existing group chat.
+    """
     body = json.dumps({"group_name": group_name})
     send_to_server(JOIN_GROUP, {"From": username}, body)
 
 
 def cmd_leave_group(group_name):
-    """Leave a group chat."""
+    """
+    Leave a group chat.
+    """
     body = json.dumps({"group_name": group_name})
     send_to_server(LEAVE_GROUP, {"From": username}, body)
 
 
 def cmd_logout():
-    """Send LOGOUT and shut down gracefully."""
+    """
+    Send LOGOUT and shut down gracefully.
+    Sets running = False so all while running: loops exit on their next iteration.
+    The server will receive LOGOUT, send ACK, and mark the user offline.
+    """
     global running
     send_to_server(LOGOUT, {"From": username})
     running = False
 
-# ============================================================================
-# Paradigm 3: P2P / TCP - File / Media Transfer
-#
-# Design rationale: large binary files are sent directly between peers to
-# avoid routing media through the server. The server only brokers the
-# peer's IP and P2P TCP port via PEER_INFO.
-#
-# Transfer protocol (CSC3002F Networks Assignment-P2P/1.0):
-#   Sender connects to receiver's P2P TCP listener, then sends:
-#     1. MEDIA_META - filename, file size, MIME type
-#     2. MEDIA_DATA - raw file bytes in body
-# ============================================================================
+
+#==============================================================
+###PARADIGM 2: CLIENT-SERVER & UDP (HEARTBEAT)
+#==============================================================    
+def heartbeat_sender():
+    """
+    Send a UDP HEARTBEAT datagram to the server every HEARTBEAT_INTERVAL seconds.
+
+    The server updates last_heartbeat for this user on receipt.
+    No response is expected. Occasional packet loss is acceptable; the next datagram arrives at most HEARTBEAT_INTERVAL seconds later.
+    UDP preserves datagram boundaries natively; no length-prefix framing needed.
+
+    Message format:
+        HEARTBEAT|CSC3002F Networks Assignment/1.0\\r\\n
+        From:\\t<username>\\r\\n
+        Content-Length:\\t0\\r\\n
+        \\r\\n
+    """
+    while running:
+        try:
+            if username:        #Prevents sending before authentication is complete.
+                datagram = encode_message(HEARTBEAT, {"From": username})
+                udp_socket.sendto(datagram, (SERVER_IP, UDP_PORT))  #sends one UDp datagram to the server's UDP port. No connection is required for UDP
+        except OSError:
+            pass
+        time.sleep(HEARTBEAT_INTERVAL)
+
+
+#==============================================================
+###PARADIGM 3: P2P & TCP (FILE/MEDIA TRANSFER)
+#==============================================================
 
 def cmd_send_file(to_user, filepath):
-    """Send a file directly to another user over P2P TCP.
+    """
+    Send a file directly to another user over P2P TCP.
 
     Steps:
         1. Ask server for peer's IP + P2P TCP port (PEER_INFO)
@@ -571,15 +684,16 @@ def cmd_send_file(to_user, filepath):
 
 
 def _p2p_send_file(peer_ip, peer_p2p_port, filepath, to_user):
-    """Open a direct TCP connection to the peer and transfer the file.
+    """
+    Open a direct TCP connection to the peer and transfer the file.
 
     Falls back to server-relayed MEDIA if the P2P connection fails.
     Runs in a dedicated thread so it does not block the UI or server listener.
     """
-    filename     = os.path.basename(filepath)
-    total_size   = os.path.getsize(filepath)
-    transfer_id  = f"{username}-{to_user}-{int(time.time())}"
-    content_type = mimetypes.guess_type(filepath)[0] or "application/octet-stream"
+    filename = os.path.basename(filepath)   #Extracts just the filename from a full path
+    total_size = os.path.getsize(filepath)    #Returns file size in bytes without reading the file
+    transfer_id = f"{username}-{to_user}-{int(time.time())}"   #Unique identifier for this transger session and helps receiver validate the META_DATA it receives belongs to the MEDIA_META it just ACKed.
+    content_type = mimetypes.guess_type(filepath)[0] or "application/octet-stream"  #Infers the MIME type from the file extension (e.g .jpg becomes image/jpeg) and falls back to generic binary (application/octet-stream) if unknown.
 
     try:
         p2p_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -630,9 +744,9 @@ def _p2p_send_file(peer_ip, peer_p2p_port, filepath, to_user):
         print_msg(f"[P2P] Direct transfer failed ({e}). Falling back to server relay...")
         try:
             with open(filepath, "rb") as f:
-                file_bytes = f.read()
+                file_bytes = f.read()           #Reads entire file into memory.
             send_to_server(
-                MEDIA,
+                MEDIA,          #Fallback routes file through server using MEDIA method
                 {"From": username, "To": to_user, "Filename": filename, "Content-Type": content_type},
                 file_bytes,
             )
@@ -646,22 +760,23 @@ pending_transfers = {}
 
 
 def p2p_receive_listener(listen_sock):
-    """P2P TCP listener — accepts incoming file transfers from peers.
+    """
+    P2P TCP listener accepts incoming file transfers from peers.
 
     Runs in a daemon thread. Receives an already-bound socket so that
     the assigned port is known before register_p2p_port() is called.
 
     Receive protocol (CSC3002F Networks Assignment-P2P/1.0):
-        1. Receive MEDIA_META  → send ACK
-        2. Receive MEDIA_DATA  → save file → send ACK
+        1. Receive MEDIA_META then send ACK
+        2. Receive MEDIA_DATA then save file then send ACK
     """
     listen_sock.listen()
 
     while running:
         try:
-            listen_sock.settimeout(1.0)
+            listen_sock.settimeout(1.0) #Makes accept time out after 1 second instead of blocking forever; allows the "while running:" check to run regularly.
             conn, addr = listen_sock.accept()
-            t = threading.Thread(target=_handle_p2p_transfer, args=(conn, addr), daemon=True)
+            t = threading.Thread(target=_handle_p2p_transfer, args=(conn, addr), daemon=True) #Each accepted connection gets its own thread so multiple transfers can occur simultaneously
             t.start()
         except socket.timeout:
             continue
@@ -672,7 +787,9 @@ def p2p_receive_listener(listen_sock):
 
 
 def _handle_p2p_transfer(conn, addr):
-    """Handle one incoming P2P file transfer."""
+    """
+    Handle one incoming P2P file transfer.
+    """
     try:
         # Step 1: receive MEDIA_META
         raw = tcp_recv(conn)
@@ -684,15 +801,15 @@ def _handle_p2p_transfer(conn, addr):
             conn.close()
             return
 
-        meta        = json.loads(meta_msg["body"].decode(FORMAT))
-        filename    = meta["filename"]
-        file_size   = meta.get("total_size", meta.get("file_size", 0))
+        meta = json.loads(meta_msg["body"].decode(FORMAT))
+        filename = meta["filename"]
+        file_size = meta.get("total_size", meta.get("file_size", 0))
         transfer_id = meta.get("transfer_id", "")
-        sender      = meta_msg["headers"].get("From", "unknown")
+        sender= meta_msg["headers"].get("From", "unknown")
 
         print_msg(f"[P2P] Incoming file '{filename}' ({file_size} bytes) from {sender}")
 
-        # ACK the meta — signals sender to proceed with data
+        # ACK the meta and signals sender to proceed with data
         raw_ack = encode_message(ACK, {}, version=P2P_VERSION)
         tcp_send(conn, raw_ack)
 
@@ -702,7 +819,10 @@ def _handle_p2p_transfer(conn, addr):
             conn.close()
             return
         data_msg   = decode_message(raw)
+        
+        #Validates that the Transger_ID in MEDIA_DATA matches the one announced in MEDIA_META
         recv_tid   = data_msg["headers"].get("Transfer_ID", "")
+       
         if transfer_id and recv_tid and recv_tid != transfer_id:
             print_msg(f"[P2P] Transfer_ID mismatch (expected {transfer_id}, got {recv_tid})")
         file_bytes = data_msg["body"]
@@ -723,47 +843,14 @@ def _handle_p2p_transfer(conn, addr):
     finally:
         conn.close()
 
-# ============================================================================
-# Paradigm 2: Client-Server / UDP - Heartbeat
-#
-# Design rationale: the server needs to know which clients are still alive.
-# Using UDP for this avoids the cost of a full TCP connection for what is
-# essentially a periodic one-way signal. Occasional packet loss is acceptable
-# as the server marks clients Idle only after 30 seconds of silence.
-# ============================================================================
 
-def heartbeat_sender():
-    """Send a UDP HEARTBEAT datagram to the server every HEARTBEAT_INTERVAL seconds.
-
-    The server updates last_heartbeat for this user on receipt.
-    No response is expected. Occasional packet loss is acceptable — the next
-    datagram arrives at most HEARTBEAT_INTERVAL seconds later.
-    UDP preserves datagram boundaries natively — no length-prefix framing needed.
-
-    Wire format:
-        HEARTBEAT|CSC3002F Networks Assignment/1.0\\r\\n
-        From:\\t<username>\\r\\n
-        Content-Length:\\t0\\r\\n
-        \\r\\n
-    """
-    while running:
-        try:
-            if username:
-                datagram = encode_message(HEARTBEAT, {"From": username})
-                udp_socket.sendto(datagram, (SERVER_IP, UDP_PORT))
-        except OSError:
-            pass
-        time.sleep(HEARTBEAT_INTERVAL)
-
-# ============================================================================
-# Background: Server to Client message listener (TCP)
-#
-# Runs in a daemon thread. Handles all unsolicited inbound messages
-# (MSG, GROUP_MSG, PEER_INFO responses, ACK, ERROR for async commands).
-# ============================================================================
+###BACKGROUND SERVER-CLIENT MESSAGE LISTENER OVER TCP
+    # Runs in a daemon thread. Handles all unsolicited inbound messages
+    # (MSG, GROUP_MSG, PEER_INFO responses, ACK, ERROR for async commands).
 
 def server_listener():
-    """Background daemon thread — receives all messages pushed by the server.
+    """
+    Background daemon thread receives all messages pushed by the server.
 
     Loops calling tcp_recv() (blocking) and dispatches on method:
 
@@ -796,7 +883,9 @@ def server_listener():
             headers = msg["headers"]
             body    = msg["body"]
 
-            # Inbound one-to-one message
+            #Inbound one-to-one message
+            #If the incoming message is from the person whose chat is currently open, append it to chat_messages and render chat will display it on the next 5-second refresh or on Enter.
+            #Otherwise, print a notification to the CLI that a message is incoming.
             if method == MSG:
                 sender    = headers.get("From", "?")
                 timestamp = headers.get("Timestamp", "")
@@ -873,14 +962,14 @@ def server_listener():
             elif method == PEER_INFO:
                 status = headers.get("Status", "")
                 if status == "200":
-                    peer      = json.loads(body.decode(FORMAT))
+                    peer = json.loads(body.decode(FORMAT))
                     peer_user = peer["username"]
-                    peer_ip   = peer["ip"]
+                    peer_ip = peer["ip"]
                     peer_port = int(peer["p2p_tcp_port"])
 
                     if peer_user in pending_transfers:
-                        filepath = pending_transfers.pop(peer_user)
-                        t = threading.Thread(
+                        filepath = pending_transfers.pop(peer_user)     #atomically removes and returns the filepath
+                        t = threading.Thread(       #p2p_send_file is launched in a new daemon thread so it runs concurrently without blocking server_listener from processing other incoming messages.
                             target=_p2p_send_file,
                             args=(peer_ip, peer_port, filepath, peer_user),
                             daemon=True
@@ -902,6 +991,7 @@ def server_listener():
                 if current_chat == sender:
                     partner_active = False
 
+            #Puts the decoded history list into history_queue.
             elif method in (MSG_HISTORY, GROUP_MSG_HISTORY):
                 try:
                     history_queue.put(json.loads(body.decode(FORMAT)))
@@ -925,12 +1015,13 @@ def server_listener():
             running = False
             break
 
-# ============================================================================
-# Connection Setup
-# ============================================================================
+
+###CONNECTION SETUP
 
 def connect_to_server():
-    """Open the TCP connection and the UDP socket."""
+    """
+    Creates the TCP connection and the UDP socket.
+    """
     global tcp_socket, udp_socket
 
     tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -941,7 +1032,8 @@ def connect_to_server():
 
 
 def register_p2p_port():
-    """Tell the server which TCP port this client listens on for P2P transfers.
+    """
+    Tell the server which TCP port this client listens on for P2P transfers.
 
     Called once after login. Other clients can then look up this port via
     PEER_INFO and open a direct TCP connection for file/media transfer.
@@ -949,9 +1041,8 @@ def register_p2p_port():
     body = json.dumps({"p2p_tcp_port": P2P_TCP_PORT})
     send_to_server("REGISTER_PORTS", {"From": username}, body)
 
-# ============================================================================
-# Interactive Command-Line Interface
-# ============================================================================
+
+###INTERACTIVE COMMAND LINE INTERFACE (CLI)
 
 HELP_TEXT = """
 Commands:
@@ -970,7 +1061,9 @@ Commands:
 
 
 def run_cli():
-    """Main input loop; reads commands from stdin and dispatches them."""
+    """
+    Main input loop; reads commands from stdin and dispatches them.
+    """
     global running
     print(HELP_TEXT)
 
@@ -1044,9 +1137,7 @@ def run_cli():
         else:
             print(f"Unknown command: {cmd}. Type /help for a list of commands.")
 
-# ============================================================================
-# Entry Point
-# ============================================================================
+###ENTRY POINT
 
 def main():
     global username, running
@@ -1100,7 +1191,7 @@ def main():
     threading.Thread(target=heartbeat_sender, daemon=True).start()
 
     # Step 7: Start TCP server listener (Paradigm 1 inbound)
-    # Must start after auth — shares tcp_socket with main thread.
+    # Must start after auth, shares tcp_socket with main thread.
     threading.Thread(target=server_listener, daemon=True).start()
 
     # Step 8: Run CLI on main thread (blocks until logout)
