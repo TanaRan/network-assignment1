@@ -700,12 +700,7 @@ def _p2p_send_file(peer_ip, peer_p2p_port, filepath, to_user):
         p2p_sock.connect((peer_ip, peer_p2p_port))
 
         # MEDIA_META: announce the transfer
-        meta = json.dumps({
-            "transfer_id":  transfer_id,
-            "filename":     filename,
-            "total_size":   total_size,
-            "content_type": content_type,
-        })
+        meta = json.dumps({"transfer_id": transfer_id,"filename": filename, "total_size": total_size,"content_type": content_type,})
         raw = encode_message(MEDIA_META, {"From": username}, meta, version=P2P_VERSION)
         tcp_send(p2p_sock, raw)
 
@@ -721,12 +716,7 @@ def _p2p_send_file(peer_ip, peer_p2p_port, filepath, to_user):
         with open(filepath, "rb") as f:
             file_bytes = f.read()
 
-        raw = encode_message(
-            MEDIA_DATA,
-            {"From": username, "Filename": filename, "Transfer_ID": transfer_id},
-            file_bytes,
-            version=P2P_VERSION,
-        )
+        raw = encode_message(MEDIA_DATA,{"From": username, "Filename": filename, "Transfer_ID": transfer_id},file_bytes,version=P2P_VERSION,)
         tcp_send(p2p_sock, raw)
 
         # Wait for final ACK
@@ -745,11 +735,7 @@ def _p2p_send_file(peer_ip, peer_p2p_port, filepath, to_user):
         try:
             with open(filepath, "rb") as f:
                 file_bytes = f.read()           #Reads entire file into memory.
-            send_to_server(
-                MEDIA,          #Fallback routes file through server using MEDIA method
-                {"From": username, "To": to_user, "Filename": filename, "Content-Type": content_type},
-                file_bytes,
-            )
+            send_to_server(MEDIA, {"From": username, "To": to_user, "Filename": filename, "Content-Type": content_type},file_bytes,) #Fallback routes file through server using MEDIA method
             print_msg(f"[MEDIA] '{filename}' sent to {to_user} via server relay.")
         except OSError as relay_err:
             print_msg(f"[MEDIA] Server relay also failed: {relay_err}")
@@ -757,7 +743,6 @@ def _p2p_send_file(peer_ip, peer_p2p_port, filepath, to_user):
 
 # pending_transfers: maps to_user -> filepath while waiting for PEER_INFO response
 pending_transfers = {}
-
 
 def p2p_receive_listener(listen_sock):
     """
@@ -878,19 +863,19 @@ def server_listener():
                 running = False
                 break
 
-            msg     = decode_message(raw)
+            msg = decode_message(raw)
             method  = msg["method"]
             headers = msg["headers"]
-            body    = msg["body"]
+            body = msg["body"]
 
             #Inbound one-to-one message
             #If the incoming message is from the person whose chat is currently open, append it to chat_messages and render chat will display it on the next 5-second refresh or on Enter.
             #Otherwise, print a notification to the CLI that a message is incoming.
             if method == MSG:
-                sender    = headers.get("From", "?")
+                sender = headers.get("From", "?")
                 timestamp = headers.get("Timestamp", "")
-                text      = body.decode(FORMAT)
-                ts        = float(timestamp) if timestamp else time.time()
+                text = body.decode(FORMAT)
+                ts = float(timestamp) if timestamp else time.time()
                 if current_chat == sender:
                     chat_messages.append({"sender": sender, "text": text, "timestamp": ts})
                 else:
@@ -898,11 +883,11 @@ def server_listener():
 
             # Inbound group message
             elif method == GROUP_MSG:
-                sender     = headers.get("From", "?")
+                sender = headers.get("From", "?")
                 group_name = headers.get("Group", "?")
-                timestamp  = headers.get("Timestamp", "")
-                text       = body.decode(FORMAT)
-                ts         = float(timestamp) if timestamp else time.time()
+                timestamp = headers.get("Timestamp", "")
+                text = body.decode(FORMAT)
+                ts = float(timestamp) if timestamp else time.time()
                 if current_chat_is_group and current_chat == group_name:
                     chat_messages.append({"sender": sender, "text": text, "timestamp": ts})
                 else:
@@ -914,7 +899,7 @@ def server_listener():
                 if current_chat:
                     ack_queue.put("ok")
                 else:
-                    info      = headers.get("Status-Text", "")
+                    info = headers.get("Status-Text", "")
                     delivered = headers.get("Delivered", "")
                     if info:
                         print_msg(f"[OK] {info}")
@@ -969,11 +954,7 @@ def server_listener():
 
                     if peer_user in pending_transfers:
                         filepath = pending_transfers.pop(peer_user)     #atomically removes and returns the filepath
-                        t = threading.Thread(       #p2p_send_file is launched in a new daemon thread so it runs concurrently without blocking server_listener from processing other incoming messages.
-                            target=_p2p_send_file,
-                            args=(peer_ip, peer_port, filepath, peer_user),
-                            daemon=True
-                        )
+                        t = threading.Thread(target=_p2p_send_file, args=(peer_ip, peer_port, filepath, peer_user),daemon=True) #p2p_send_file is launched in a new daemon thread so it runs concurrently without blocking server_listener from processing other incoming messages.
                         t.start()
                     else:
                         print_msg(f"[PEER INFO] {peer_user} is at {peer_ip}:{peer_port}")
@@ -1078,7 +1059,7 @@ def run_cli():
             continue
 
         parts = line.split(None, 2)   # max 3 tokens: command, arg1, rest
-        cmd   = parts[0].lower()
+        cmd = parts[0].lower()
 
         if cmd == "/msg":
             if len(parts) < 2:

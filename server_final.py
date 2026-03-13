@@ -116,7 +116,7 @@ clients_lock = threading.Lock()
 #============================================================================
 groups = {} #In-memory dictionary to track groups and their members. Keyed by group_name, values are dicts with creator and members (a set of usernames).
 # groups[group_name] = {"creator": str, "members": set()}
-groups_lock  = threading.Lock()
+groups_lock= threading.Lock()
 #creates a mutual exclusion lock for the groups dict, ensuring thread-safe access and modifications to group information in a concurrent environment.
 #============================================================================
 
@@ -135,14 +135,7 @@ groups_lock  = threading.Lock()
 def init_db():
     con = sqlite3.connect(DB_PATH)  #returns a Connection object representing the database connection. If the file does not exist, it will be created.
     con.execute("""CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT NOT NULL)""")
-    con.execute("""CREATE TABLE IF NOT EXISTS messages (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        sender     TEXT NOT NULL,
-        recipient  TEXT,
-        group_name TEXT,
-        text       TEXT NOT NULL,
-        timestamp  REAL NOT NULL
-    )""")
+    con.execute("""CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT NOT NULL, recipient TEXT, group_name TEXT, text TEXT NOT NULL,timestamp REAL NOT NULL)""")
     con.execute("""CREATE TABLE IF NOT EXISTS groups (group_name TEXT PRIMARY KEY, creator TEXT NOT NULL)""")
     con.execute("""CREATE TABLE IF NOT EXISTS group_members (group_name TEXT NOT NULL,username TEXT NOT NULL, PRIMARY KEY (group_name, username))""")
     
@@ -160,15 +153,7 @@ def load_users_from_db():
     """
     con = sqlite3.connect(DB_PATH)
     for username, password in con.execute("SELECT username, password FROM users"):
-        clients[username] = {
-            "password": password,
-            "connection": None,
-            "address": ("", 0),
-            "visibility": "Public",
-            "status": "Offline",
-            "p2p_tcp_port": 0,
-            "last_heartbeat": 0,
-        }
+        clients[username] = {"password": password,"connection": None,"address": ("", 0),"visibility": "Public","status": "Offline","p2p_tcp_port": 0,"last_heartbeat": 0,}
     con.close()
 
 def load_groups_from_db():
@@ -179,13 +164,8 @@ def load_groups_from_db():
     """
     con = sqlite3.connect(DB_PATH)
     for group_name, creator in con.execute("SELECT group_name, creator FROM groups").fetchall():
-        member_rows = con.execute(
-            "SELECT username FROM group_members WHERE group_name=?", (group_name,)
-        ).fetchall()
-        groups[group_name] = {
-            "creator": creator,
-            "members": {r[0] for r in member_rows},
-        }
+        member_rows = con.execute("SELECT username FROM group_members WHERE group_name=?", (group_name,)).fetchall()
+        groups[group_name] = {"creator": creator,"members": {r[0] for r in member_rows},}
     con.close()
 
 def db_save_user(username, password):
@@ -398,12 +378,7 @@ def build_user_list():
     """
     with clients_lock:
         visible = [
-            {
-                "username": u,
-                "ip": data["address"][0],
-                "p2p_tcp_port": data["p2p_tcp_port"],
-                "status": data["status"],
-            }
+            {"username": u,"ip": data["address"][0],"p2p_tcp_port": data["p2p_tcp_port"],"status": data["status"],}
             for u, data in clients.items()
             if data["visibility"] == "Public" and data["status"] == "Available"
         ]
@@ -416,11 +391,7 @@ def build_group_list():
     """
     with groups_lock:
         result = [
-            {
-                "group_name": g,
-                "creator": data["creator"],
-                "member_count": len(data["members"]),
-            }
+            {"group_name": g,"creator": data["creator"],"member_count": len(data["members"]),}
             for g, data in groups.items()
         ]
     return json.dumps(result) #serialises the list to a JSON string, which will become the message body.
@@ -474,15 +445,7 @@ def entry_sequence(connection, address):
                 if username in clients:
                     send_error(connection, "409", "Username already taken")
                     continue
-                clients[username] = {
-                    "password":       password,
-                    "connection":     connection,
-                    "address":        address,
-                    "visibility":     "Public",
-                    "status":         "Available",
-                    "p2p_tcp_port":   0,
-                    "last_heartbeat": time.time(),
-                }
+                clients[username] = {"password":password,"connection":connection,"address":address,"visibility":"Public","status":"Available","p2p_tcp_port": 0,"last_heartbeat": time.time(),}
                 db_save_user(username, password)
                 send_to(connection, ACK, {"Status": "201", "Status-Text": "Account created"})
                 print(f"[REGISTER] New user: {username} from {address}")
@@ -587,11 +550,7 @@ def handle_client(connection, address):
                                    f"User '{target}' not found or offline")
                     else:
                         peer = clients[target]
-                        peer_data = {
-                            "username":     target,
-                            "ip":           peer["address"][0],
-                            "p2p_tcp_port": peer["p2p_tcp_port"],
-                        }
+                        peer_data = {"username": target,"ip": peer["address"][0],"p2p_tcp_port": peer["p2p_tcp_port"],}
                         send_to(connection, PEER_INFO,
                                 {"Status": "200", "Content-Type": "application/json"},
                                 json.dumps(peer_data))
@@ -601,7 +560,7 @@ def handle_client(connection, address):
             # Both the in-memory dict and the database are updated atomically within the lock.
             elif method == CREATE_GROUP:
                 try:
-                    data       = json.loads(body.decode(FORMAT))
+                    data = json.loads(body.decode(FORMAT))
                     group_name = data["group_name"]
                 except (json.JSONDecodeError, KeyError):
                     send_error(connection, "400",
@@ -624,7 +583,7 @@ def handle_client(connection, address):
             
             elif method == JOIN_GROUP:
                 try:
-                    data       = json.loads(body.decode(FORMAT))
+                    data = json.loads(body.decode(FORMAT))
                     group_name = data["group_name"]
                 except (json.JSONDecodeError, KeyError):
                     send_error(connection, "400",
@@ -642,7 +601,7 @@ def handle_client(connection, address):
 
             elif method == LEAVE_GROUP:
                 try:
-                    data       = json.loads(body.decode(FORMAT))
+                    data = json.loads(body.decode(FORMAT))
                     group_name = data["group_name"]
                 except (json.JSONDecodeError, KeyError):
                     send_error(connection, "400",
@@ -673,12 +632,7 @@ def handle_client(connection, address):
                                    f"User '{to_user}' is offline")
                     else:
                         ts = str(time.time())
-                        fwd_headers = {
-                            "From": username,
-                            "To": to_user,
-                            "Timestamp": ts,
-                            "Sequence_Num": seq,
-                        }
+                        fwd_headers = {"From": username,"To": to_user,"Timestamp": ts,"Sequence_Num": seq,}
                         send_to(clients[to_user]["connection"],
                                 MSG, fwd_headers, msg_body)
                         db_save_message(username, msg_body, float(ts), recipient=to_user)
@@ -705,11 +659,7 @@ def handle_client(connection, address):
                         if member == username:
                             continue
                         if member in clients and clients[member]["connection"]:
-                            fwd_headers = {
-                                "From": username,
-                                "Group": group_name,
-                                "Timestamp": str(time.time()),
-                            }
+                            fwd_headers = {"From": username,"Group": group_name,"Timestamp": str(time.time()),}
                             try:
                                 send_to(clients[member]["connection"],
                                         GROUP_MSG, fwd_headers, msg_body)
@@ -748,11 +698,7 @@ def handle_client(connection, address):
                     conn = clients[to_user]["connection"] if to_user in clients else None
                 if conn:
                     try:
-                        fwd_headers = {
-                            "From": username,
-                            "Filename": headers.get("Filename", "file"),
-                            "Content-Type": headers.get("Content-Type", "application/octet-stream"),
-                        }
+                        fwd_headers = {"From": username,"Filename": headers.get("Filename", "file"),"Content-Type": headers.get("Content-Type", "application/octet-stream"),}
                         send_to(conn, MEDIA, fwd_headers, body)
                         send_ack(connection)
                         print(f"[MEDIA RELAY] {username} -> {to_user} ({len(body)} bytes)")
@@ -768,11 +714,7 @@ def handle_client(connection, address):
             elif method == MSG_HISTORY:
                 target = headers.get("To", "").strip()
                 con = sqlite3.connect(DB_PATH)
-                rows = con.execute(
-                    """SELECT sender, text, timestamp FROM messages
-                       WHERE (sender=? AND recipient=?) OR (sender=? AND recipient=?)
-                       ORDER BY timestamp""",
-                    (username, target, target, username)).fetchall()
+                rows = con.execute("""SELECT sender, text, timestamp FROM messages WHERE (sender=? AND recipient=?) OR (sender=? AND recipient=?) ORDER BY timestamp""",(username, target, target, username)).fetchall()
                 con.close()
                 history = [{"sender": r[0], "text": r[1], "timestamp": r[2]} for r in rows]
                 send_to(connection, MSG_HISTORY, {"Status": "200"}, json.dumps(history))
