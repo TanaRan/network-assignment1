@@ -54,8 +54,7 @@ UDP_PORT = 5073 #Port number on which the server listens for UDP datagrams, spec
 UDP_ADDRESS = ("0.0.0.0", UDP_PORT) #0.0.0.0 means bind to all available network interfaces, allowing clients to connect from any IP address that can reach the server.
 SERVER_IP = socket.gethostbyname(socket.gethostname())  #resolves the machine's hostname to its primary IP address at startup. 
                                                         #Used in log messages so the operator knows which address clients should connect to. 
-                                                        #Note that this may not always give the correct IP if the machine has multiple interfaces or is behind NAT, but is sufficient for local testing and demonstration purposes.
-
+                                                        #Server IP is static for the moment but might change this in future
 DB_PATH = "chat.db" #filename of the sqlite3 database file used to persist user accounts, group information, and message history.
 
 ###PROTOCOL CONSTANTS
