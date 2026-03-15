@@ -62,7 +62,7 @@ TCP_PORT = 5072 #Port number on which the server listens for persistent client T
                 #5072 chosen as it is not commonly used by other applications and is in the registered port range (1024-49151), minimizing potential conflicts. (Ports 5000 and up recommended by lecturer)
 UDP_PORT = 5073 #Port number on which the server listens for UDP datagrams, specifically for presence heartbeats from clients and pings.
 P2P_TCP_PORT= 6000  #This client's P2P listener port (file/media receive). This is an initial placeholder. The actual port is overwritten with whatever the OS assigns when binding to port 0.
-SERVER_IP = '34.35.51.183' #Production IP Address just adding this to push changes
+SERVER_IP = '34.35.51.183' #Production IP Address 
 HEARTBEAT_INTERVAL = 10 #seconds betweend UDP presence signals
 
 ###PROTOCOL CONSTANTS (MIRRORS server_final.py)
