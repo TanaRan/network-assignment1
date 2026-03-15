@@ -374,6 +374,14 @@ def cmd_open_chat(to_user):
     """
     global current_chat, chat_messages, chat_page, partner_active, chat_notice
 
+    #First we drain the queue of any old requests before we continue with new requests
+    while not history_queue.empty():
+        try:
+            history_queue.get_nowait()
+        except queue.Empty():
+            break
+
+
     #The history request is sent, then the function blocks on history_queue.get(timeout=5).
     #The background server_listener thread will put the response into history_queue when it arrives. 
     #If nothing arrives within 5 seconds, the function aborts.
@@ -504,6 +512,14 @@ def cmd_open_group_chat(group_name):
     display = f"[group] {group_name}" is passed to render_chat and update_input_line so the chat header and prompt clearly indicate this is a group context.
     """
     global current_chat, current_chat_is_group, chat_messages, chat_page, chat_notice
+    
+    #Here we do the same thing as before and drain the queue of any stale data first 
+    #First we drain the queue of any old requests before we continue with new requests
+    while not history_queue.empty():
+        try:
+            history_queue.get_nowait()
+        except queue.Empty():
+            break
 
     send_to_server(GROUP_MSG_HISTORY, {"From": username, "Group": group_name})
     try:
